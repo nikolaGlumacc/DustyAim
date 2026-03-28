@@ -1,0 +1,66 @@
+<UserControl x:Class="AimmyWPF.UserController.AModeSelector"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+             xmlns:local="clr-namespace:AimmyWPF.UserController"
+             mc:Ignorable="d"
+             d:DesignHeight="60" d:DesignWidth="532">
+    <UserControl.Resources>
+        <!-- Ease for slide animation -->
+        <CubicEase x:Key="SlideEase" EasingMode="EaseOut"/>
+    </UserControl.Resources>
+
+    <!-- Outer clip container: height animates between 0 and content height -->
+    <Grid x:Name="AnimationRoot" Height="0" ClipToBounds="True" Margin="0,0,0,0">
+        <!-- Padding container so bottom margin isn't clipped during animation -->
+        <Grid Margin="0,0,0,10">
+            <Border Background="#FF191919"
+                    BorderBrush="#FF1E1E1E"
+                    BorderThickness="2"
+                    CornerRadius="5"
+                    ClipToBounds="True">
+                <Grid Height="40">
+                    <Label x:Name="Title"
+                           Foreground="White"
+                           Content="Button Press Mode"
+                           FontFamily="/AimmyWPF;component/Fonts/#Atkinson Hyperlegible"
+                           VerticalContentAlignment="Center"
+                           Padding="10,0,0,0"
+                           FontSize="13"
+                           Margin="0,0,200,0" />
+
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center"
+                                Margin="0,5,10,5">
+                        <Button x:Name="HoldButton"
+                                Content="Hold"
+                                Width="80"
+                                Height="30"
+                                Margin="0,0,5,0"
+                                Background="#FF323232"
+                                BorderBrush="{x:Null}"
+                                Foreground="White"
+                                FontSize="11"
+                                materialDesign:ButtonAssist.CornerRadius="5"
+                                Click="ModeButton_Click"
+                                Tag="Hold" />
+                        <Button x:Name="ToggleButton"
+                                Content="Toggle"
+                                Width="80"
+                                Height="30"
+                                Background="#FF323232"
+                                BorderBrush="{x:Null}"
+                                Foreground="White"
+                                FontSize="11"
+                                materialDesign:ButtonAssist.CornerRadius="5"
+                                Click="ModeButton_Click"
+                                Tag="Toggle" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

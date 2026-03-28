@@ -1,0 +1,118 @@
+<Window x:Class="Visualization.DebugOverlay"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DustyAim Debug"
+        Width="340"
+        Height="420"
+        WindowStyle="ToolWindow"
+        Topmost="True"
+        ResizeMode="NoResize"
+        Background="#EE0D0D0D"
+        Foreground="White"
+        ShowInTaskbar="False"
+        WindowStartupLocation="Manual"
+        Left="10"
+        Top="10"
+        Closing="Window_Closing">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Title -->
+        <TextBlock Grid.Row="0" Text="🔍 DustyAim Live Debug" FontSize="14" FontWeight="Bold"
+                   Foreground="#3e8fb0" Margin="0,0,0,8"/>
+
+        <!-- Status Grid -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="140"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="22"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Loop Running:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="LoopStatus"    Grid.Row="0" Grid.Column="1" Text="NO" Foreground="#ff4444" FontSize="11" FontWeight="Bold"/>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Inference Calls:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="FrameCount"    Grid.Row="1" Grid.Column="1" Text="0" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Detections This Sec:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="DetectCount"   Grid.Row="2" Grid.Column="1" Text="0" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Max Confidence:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="MaxConf"       Grid.Row="3" Grid.Column="1" Text="0.000" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Threshold:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="Threshold"     Grid.Row="4" Grid.Column="1" Text="0.50" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="5" Grid.Column="0" Text="Inference FPS:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="InferenceFPS"  Grid.Row="5" Grid.Column="1" Text="0" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="6" Grid.Column="0" Text="Model Style:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="ModelStyle"    Grid.Row="6" Grid.Column="1" Text="?" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="7" Grid.Column="0" Text="Anchors:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="Anchors"       Grid.Row="7" Grid.Column="1" Text="0" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="8" Grid.Column="0" Text="DPI Scale:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="DpiInfo"       Grid.Row="8" Grid.Column="1" Text="1.0x1.0" Foreground="White" FontSize="11"/>
+
+            <!-- Separator -->
+            <Border Grid.Row="9" Grid.ColumnSpan="2" BorderBrush="#333" BorderThickness="0,1,0,0" Margin="0,4"/>
+
+            <TextBlock Grid.Row="10" Grid.Column="0" Text="Capture X,Y:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="CaptureXY"     Grid.Row="10" Grid.Column="1" Text="?" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="11" Grid.Column="0" Text="Capture Size:" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="CaptureSize"   Grid.Row="11" Grid.Column="1" Text="?" Foreground="White" FontSize="11"/>
+
+            <TextBlock Grid.Row="12" Grid.Column="0" Text="Screen (physical):" Foreground="#aaa" FontSize="11"/>
+            <TextBlock x:Name="ScreenSize"    Grid.Row="12" Grid.Column="1" Text="?" Foreground="White" FontSize="11"/>
+        </Grid>
+
+        <!-- Log -->
+        <ScrollViewer x:Name="LogScroller" Grid.Row="2" Margin="0,10,0,0"
+                      Background="#111" VerticalScrollBarVisibility="Auto">
+            <TextBlock x:Name="LogText" Foreground="#88ff88" FontSize="10"
+                       FontFamily="Consolas" Padding="4" TextWrapping="Wrap"/>
+        </ScrollViewer>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0" HorizontalAlignment="Center">
+            <Button x:Name="SaveFrameBtn" Content="💾 Save Frame"
+                    Width="100" Height="28" Margin="0,0,6,0"
+                    Background="#1a3a50" Foreground="White" BorderBrush="#3e8fb0"
+                    Click="SaveFrameBtn_Click" FontSize="11"/>
+            <Button x:Name="OpenFolderBtn" Content="📂 Open Folder"
+                    Width="100" Height="28" Margin="0,0,6,0"
+                    Background="#1a3a50" Foreground="White" BorderBrush="#3e8fb0"
+                    Click="OpenFolderBtn_Click" FontSize="11"/>
+            <Button x:Name="OpenLogBtn" Content="📜 Open Log"
+                    Width="80" Height="28" Margin="0,0,6,0"
+                    Background="#1a3a50" Foreground="White" BorderBrush="#3e8fb0"
+                    Click="OpenLogBtn_Click" FontSize="11"/>
+            <Button x:Name="ClearLogBtn" Content="🗑 Clear"
+                    Width="60" Height="28"
+                    Background="#2a1515" Foreground="White" BorderBrush="#553333"
+                    Click="ClearLogBtn_Click" FontSize="11"/>
+        </StackPanel>
+    </Grid>
+</Window>

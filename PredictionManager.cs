@@ -1,0 +1,55 @@
+﻿using Accord.Statistics.Running;
+using System;
+
+namespace AimmyWPF
+{
+    internal class PredictionManager
+    {
+        public struct Detection
+        {
+            public int X;
+            public int Y;
+            public DateTime Timestamp;
+        }
+
+        private KalmanFilter2D kalmanFilter;
+        private DateTime lastUpdateTime;
+
+        public double PredictionStrength { get; set; } = 1.0;
+
+        public PredictionManager()
+        {
+            kalmanFilter = new KalmanFilter2D();
+            lastUpdateTime = DateTime.UtcNow;
+        }
+
+        public void UpdateKalmanFilter(Detection detection)
+        {
+            var currentTime = DateTime.UtcNow;
+
+            kalmanFilter.Push(detection.X, detection.Y);
+            lastUpdateTime = currentTime;
+        }
+
+        public Detection GetEstimatedPosition()
+        {
+            // Current estimated position
+            double currentX = kalmanFilter.X;
+            double currentY = kalmanFilter.Y;
+
+            // Current velocity
+            double velocityX = kalmanFilter.XAxisVelocity;
+            double velocityY = kalmanFilter.YAxisVelocity;
+
+            // Calculate time since last update
+            double timeStep = (DateTime.UtcNow - lastUpdateTime).TotalSeconds;
+
+            // Predict next position based on current position and velocity
+            double leadScale = Math.Clamp(PredictionStrength, 0.0, 1.0);
+            double predictedX = currentX + velocityX * timeStep * leadScale;
+            double predictedY = currentY + velocityY * timeStep * leadScale;
+
+            return new Detection { X = (int)predictedX, Y = (int)predictedY };
+        }
+    }
+}
