@@ -1,5 +1,7 @@
 ﻿using System.Windows;
 
+using Visualization;
+
 namespace AimmyWPF
 {
     /// <summary>
@@ -15,6 +17,7 @@ namespace AimmyWPF
 
         private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
+            DebugLog.Flush();
             System.IO.File.WriteAllText("crash.log", e.Exception.ToString());
             e.Handled = true; // Prevents the application from closing immediately if possible
             MessageBox.Show("A fatal error occurred. Check crash.log for details.", "Fatal Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -22,8 +25,15 @@ namespace AimmyWPF
 
         private void CurrentDomain_UnhandledException(object sender, System.UnhandledExceptionEventArgs e)
         {
+            DebugLog.Flush();
             System.IO.File.WriteAllText("crash_domain.log", e.ExceptionObject.ToString());
             MessageBox.Show("A fatal error occurred. Check crash_domain.log for details.", "Fatal Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            DebugLog.Flush();
+            base.OnExit(e);
         }
     }
 }

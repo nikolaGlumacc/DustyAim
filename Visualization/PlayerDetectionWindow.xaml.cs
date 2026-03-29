@@ -12,6 +12,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Globalization;
 using System.Windows.Markup;
+using System.Windows.Interop;
 using AimmyWPF.Class;
 using AimmyWPF;
 
@@ -78,7 +79,7 @@ namespace Visualization
             OverlayClickThrough.Apply(this);
         }
 
-        private void UpdateWindowBounds()
+        public void UpdateWindowBounds()
         {
             var left = SystemParameters.VirtualScreenLeft;
             var top = SystemParameters.VirtualScreenTop;
@@ -97,9 +98,45 @@ namespace Visualization
             this.Hide();
         }
 
+        public bool TryScreenToWindow(Point screenPoint, out Point windowPoint)
+        {
+            UpdateWindowBounds();
+
+            try
+            {
+                if (PresentationSource.FromVisual(this) != null && new WindowInteropHelper(this).Handle != IntPtr.Zero)
+                {
+                    windowPoint = PointFromScreen(screenPoint);
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            double dpiX = 1.0;
+            double dpiY = 1.0;
+
+            try
+            {
+                DpiScale dpi = VisualTreeHelper.GetDpi(this);
+                dpiX = dpi.DpiScaleX;
+                dpiY = dpi.DpiScaleY;
+            }
+            catch
+            {
+            }
+
+            windowPoint = new Point(
+                (screenPoint.X / Math.Max(0.01, dpiX)) - Left,
+                (screenPoint.Y / Math.Max(0.01, dpiY)) - Top);
+            return IsLoaded || IsVisible;
+        }
+
         public Point ScreenToWindow(Point screenPoint)
         {
-            return PointFromScreen(screenPoint);
+            TryScreenToWindow(screenPoint, out Point windowPoint);
+            return windowPoint;
         }
     }
 

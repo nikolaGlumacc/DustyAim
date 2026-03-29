@@ -114,7 +114,8 @@ namespace Visualization
         {
             try
             {
-                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dusty_debug.log");
+                DebugLog.Flush();
+                string logPath = DebugLog.LogFilePath;
                 if (!File.Exists(logPath))
                 {
                     AddLog("Log file does not exist yet.");

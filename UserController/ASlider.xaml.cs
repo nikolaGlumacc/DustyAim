@@ -22,6 +22,7 @@ namespace AimmyWPF.UserController
 
                 // Added by Nori
                 Slider.Value = Math.Round(Slider.Value, 2);
+                MainWin.NotifyPersistentSettingChanged();
             };
 
             // Added by Nori

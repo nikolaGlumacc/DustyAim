@@ -167,9 +167,7 @@ namespace AimmyAimbot
 
         private void Log(string message)
         {
-            try {
-                File.AppendAllText("dusty_debug.log", $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
-            } catch { }
+            DebugLog.Write(message);
         }
 
         private void LogScreenGrabException(Exception ex)
@@ -207,6 +205,18 @@ namespace AimmyAimbot
                 catch { }
                 _screenCaptureBitmap = null;
             }
+        }
+
+        private static float ToProbability(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+                return 0f;
+
+            if (value >= 0f && value <= 1f)
+                return value;
+
+            double exp = Math.Exp(-value);
+            return (float)(1.0 / (1.0 + exp));
         }
 
         private static Bitmap CaptureToNewBitmap(Rectangle detectionBox)
@@ -488,6 +498,10 @@ namespace AimmyAimbot
         {
             if (_onnxModel == null || string.IsNullOrWhiteSpace(_inputName)) return null;
 
+            AIConfidence = 0f;
+            DebugOverlay.DetectionsThisSec = 0;
+            DebugOverlay.LastMaxConf = 0f;
+
             Rectangle physicalDetectionBox = GetPhysicalCaptureBox();
             Rectangle physicalScreenBounds = CaptureScreenBounds;
             if (physicalScreenBounds.Width <= 0 || physicalScreenBounds.Height <= 0)
@@ -614,11 +628,6 @@ namespace AimmyAimbot
 
                     if (runtimeNumAnchors <= 0) return null;
 
-                    float fovMinX = (_modelInputWidth - FovSize) / 2.0f;
-                    float fovMaxX = (_modelInputWidth + FovSize) / 2.0f;
-                    float fovMinY = (_modelInputHeight - FovSize) / 2.0f;
-                    float fovMaxY = (_modelInputHeight + FovSize) / 2.0f;
-
                     float localMaxX = Math.Max(1f, physicalDetectionBox.Width);
                     float localMaxY = Math.Max(1f, physicalDetectionBox.Height);
 
@@ -641,7 +650,7 @@ namespace AimmyAimbot
                             float y1 = outputTensor[0, i, 1];
                             float x2 = outputTensor[0, i, 2];
                             float y2 = outputTensor[0, i, 3];
-                            confidence = outputTensor[0, i, 4];
+                            confidence = ToProbability(outputTensor[0, i, 4]);
 
                             width = x2 - x1;
                             height = y2 - y1;
@@ -658,13 +667,13 @@ namespace AimmyAimbot
                             confidence = 0f;
                             for (int c = 0; c < runtimeNumClasses; c++)
                             {
-                                float score = outputTensor[0, 4 + c, i];
+                                float score = ToProbability(outputTensor[0, 4 + c, i]);
                                 if (score > confidence) confidence = score;
                             }
                         }
                         else
                         {
-                            float obj_conf = outputTensor[0, i, 4];
+                            float obj_conf = ToProbability(outputTensor[0, i, 4]);
                             x_center = outputTensor[0, i, 0];
                             y_center = outputTensor[0, i, 1];
                             width = outputTensor[0, i, 2];
@@ -673,7 +682,7 @@ namespace AimmyAimbot
                             float max_class_score = 0f;
                             for (int c = 0; c < runtimeNumClasses; c++)
                             {
-                                float score = outputTensor[0, i, 5 + c];
+                                float score = ToProbability(outputTensor[0, i, 5 + c]);
                                 if (score > max_class_score) max_class_score = score;
                             }
                             confidence = max_class_score * obj_conf;
@@ -739,16 +748,6 @@ namespace AimmyAimbot
                         float yMinModel = useTopLeft ? yMinTopLeft : yMinCenter;
                         float xMaxModel = useTopLeft ? xMaxTopLeft : xMaxCenter;
                         float yMaxModel = useTopLeft ? yMaxTopLeft : yMaxCenter;
-
-                        float candidateCenterX = xMinModel + ((xMaxModel - xMinModel) * 0.5f);
-                        float candidateCenterY = yMinModel + ((yMaxModel - yMinModel) * 0.5f);
-                        bool centerInsideFov =
-                            candidateCenterX >= fovMinX &&
-                            candidateCenterX <= fovMaxX &&
-                            candidateCenterY >= fovMinY &&
-                            candidateCenterY <= fovMaxY;
-                        if (!centerInsideFov)
-                            return;
 
                         float xMinCapture = (xMinModel - letterboxInfo.PadX) / letterboxInfo.Scale;
                         float yMinCapture = (yMinModel - letterboxInfo.PadY) / letterboxInfo.Scale;

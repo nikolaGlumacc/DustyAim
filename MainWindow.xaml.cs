@@ -21,6 +21,7 @@ using System.IO.Ports;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Visualization;
 using static AimmyWPF.PredictionManager;
 
@@ -97,11 +98,21 @@ namespace AimmyWPF
 
         private int _logCounter = 0;
         private DateTime _lastIdleHeartbeatLog = DateTime.MinValue;
+        private bool _suppressModelSelectionChange = false;
+        private DateTime _lastModelListRefreshUtc = DateTime.MinValue;
+        private string _loadedModelName = string.Empty;
+        private readonly DispatcherTimer _persistentSaveTimer;
+        private bool _allowPersistentAutosave = false;
+        private bool _suspendPersistentNotifications = false;
+        private Slider _aimTargetZoneSliderControl;
+        private Border _aimTargetZonePreviewLine;
+        private System.Windows.Shapes.Ellipse _aimTargetZonePreviewMarker;
+        private TextBlock _aimTargetZonePreviewText;
+        private const double AimTargetPreviewBoxWidth = 170.0;
+        private const double AimTargetPreviewBoxHeight = 230.0;
         private void Log(string message)
         {
-            try {
-                File.AppendAllText("dusty_debug.log", $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
-            } catch { }
+            DebugLog.Write(message);
         }
 
         private AIModel _onnxModel;
@@ -167,7 +178,7 @@ namespace AimmyWPF
             { "X_Offset", 0 },
             { "Aim_HeadRatio", 0.15 },
             { "Aim_PredictionStrength", 1.0 },
-            { "Aim_BoxFormat", "center" },
+            { "Aim_BoxFormat", "auto" },
             { "Trigger_Delay", 0.1 },
             { "Recoil_PatternPath", "" },
             { "Recoil_Scale", 1.0 },
@@ -539,7 +550,7 @@ namespace AimmyWPF
 
             model.FovSize = GetSettingInt("FOV_Size", 320);
             model.ConfidenceThreshold = (float)(GetSettingDouble("AI_Min_Conf", 5.0) / 100.0);
-            model.OutputBoxFormat = ParseBoxFormat(GetSettingString("Aim_BoxFormat", "center"));
+            model.OutputBoxFormat = ParseBoxFormat(GetSettingString("Aim_BoxFormat", "auto"));
         }
 
         private Dictionary<string, bool> BuildToggleSnapshot()
@@ -699,6 +710,217 @@ namespace AimmyWPF
             }
         }
 
+        private void SaveDefaultConfig()
+        {
+            try
+            {
+                var extendedSettings = new Dictionary<string, object>();
+                foreach (var kvp in aimmySettings)
+                {
+                    extendedSettings[kvp.Key] = kvp.Value;
+                }
+
+                extendedSettings["TopMost"] = this.Topmost;
+
+                string json = JsonConvert.SerializeObject(extendedSettings, Formatting.Indented);
+                File.WriteAllText("bin/configs/Default.cfg", json);
+            }
+            catch (Exception ex)
+            {
+                Log($"Default config save failed: {ex.Message}");
+            }
+        }
+
+        private void SaveOverlayProperties()
+        {
+            try
+            {
+                var overlaySettings = new Dictionary<string, object>();
+                foreach (var kvp in OverlayProperties)
+                {
+                    overlaySettings[kvp.Key] = kvp.Value;
+                }
+
+                string json = JsonConvert.SerializeObject(overlaySettings, Formatting.Indented);
+                File.WriteAllText("bin/Overlay.cfg", json);
+            }
+            catch (Exception ex)
+            {
+                Log($"Overlay save failed: {ex.Message}");
+            }
+        }
+
+        private void PersistRuntimeState()
+        {
+            BuildToggleSnapshot();
+            SaveSessionState();
+            SaveDefaultConfig();
+            SaveOverlayProperties();
+        }
+
+        private void QueuePersistentSave()
+        {
+            if (!_allowPersistentAutosave || _suspendPersistentNotifications || SavedData)
+                return;
+
+            Action schedule = () =>
+            {
+                _persistentSaveTimer.Stop();
+                _persistentSaveTimer.Start();
+            };
+
+            if (Dispatcher.CheckAccess())
+                schedule();
+            else
+                Dispatcher.BeginInvoke(schedule);
+        }
+
+        public void NotifyPersistentSettingChanged()
+        {
+            QueuePersistentSave();
+        }
+
+        private void WithPersistentNotificationsSuspended(Action action)
+        {
+            bool previous = _suspendPersistentNotifications;
+            _suspendPersistentNotifications = true;
+            try
+            {
+                action();
+            }
+            finally
+            {
+                _suspendPersistentNotifications = previous;
+            }
+        }
+
+        private FrameworkElement CreateAimTargetZonePreview()
+        {
+            Border outerBorder = new()
+            {
+                BorderBrush = (Brush)brushcolor.ConvertFromString("#334B5C"),
+                BorderThickness = new Thickness(1),
+                Background = (Brush)brushcolor.ConvertFromString("#101821"),
+                CornerRadius = new CornerRadius(10),
+                Margin = new Thickness(13, 0, 13, 12),
+                Padding = new Thickness(12)
+            };
+
+            StackPanel stack = new()
+            {
+                Orientation = Orientation.Vertical
+            };
+
+            _aimTargetZonePreviewText = new TextBlock
+            {
+                Foreground = Brushes.White,
+                FontFamily = new FontFamily("Atkinson Hyperlegible"),
+                Margin = new Thickness(0, 0, 0, 10),
+                TextWrapping = TextWrapping.Wrap
+            };
+            stack.Children.Add(_aimTargetZonePreviewText);
+
+            Grid previewRoot = new()
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            Border detectionBox = new()
+            {
+                Width = AimTargetPreviewBoxWidth,
+                Height = AimTargetPreviewBoxHeight,
+                BorderBrush = (Brush)brushcolor.ConvertFromString("#88E25555"),
+                BorderThickness = new Thickness(2),
+                CornerRadius = new CornerRadius(8),
+                Background = (Brush)brushcolor.ConvertFromString("#16212B")
+            };
+
+            Canvas previewCanvas = new()
+            {
+                Width = AimTargetPreviewBoxWidth,
+                Height = AimTargetPreviewBoxHeight,
+                ClipToBounds = true
+            };
+
+            Border centerGuide = new()
+            {
+                Width = 2,
+                Height = AimTargetPreviewBoxHeight,
+                Background = (Brush)brushcolor.ConvertFromString("#334B5C")
+            };
+            Canvas.SetLeft(centerGuide, (AimTargetPreviewBoxWidth / 2.0) - 1);
+            Canvas.SetTop(centerGuide, 0);
+            previewCanvas.Children.Add(centerGuide);
+
+            _aimTargetZonePreviewLine = new Border
+            {
+                Width = AimTargetPreviewBoxWidth,
+                Height = 2,
+                Background = Brushes.LimeGreen,
+                CornerRadius = new CornerRadius(1)
+            };
+            previewCanvas.Children.Add(_aimTargetZonePreviewLine);
+
+            _aimTargetZonePreviewMarker = new System.Windows.Shapes.Ellipse
+            {
+                Width = 12,
+                Height = 12,
+                Fill = Brushes.LimeGreen,
+                Stroke = Brushes.Black,
+                StrokeThickness = 1.5
+            };
+            previewCanvas.Children.Add(_aimTargetZonePreviewMarker);
+
+            TextBlock topLabel = new()
+            {
+                Text = "Top of box",
+                Foreground = Brushes.LightGray,
+                FontFamily = new FontFamily("Atkinson Hyperlegible"),
+                FontSize = 11,
+                Margin = new Thickness(0, 0, 0, 6),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+
+            TextBlock bottomLabel = new()
+            {
+                Text = "Bottom of box",
+                Foreground = Brushes.LightGray,
+                FontFamily = new FontFamily("Atkinson Hyperlegible"),
+                FontSize = 11,
+                Margin = new Thickness(0, 6, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+
+            detectionBox.Child = previewCanvas;
+            stack.Children.Add(topLabel);
+            previewRoot.Children.Add(detectionBox);
+            stack.Children.Add(previewRoot);
+            stack.Children.Add(bottomLabel);
+
+            outerBorder.Child = stack;
+            UpdateAimTargetZonePreview();
+            return outerBorder;
+        }
+
+        private void UpdateAimTargetZonePreview()
+        {
+            if (_aimTargetZonePreviewLine == null || _aimTargetZonePreviewMarker == null || _aimTargetZonePreviewText == null)
+                return;
+
+            double ratio = Math.Clamp(GetSettingDouble("Aim_HeadRatio", 0.15), 0.0, 1.0);
+            double targetY = Math.Clamp(ratio * AimTargetPreviewBoxHeight, 0.0, AimTargetPreviewBoxHeight);
+            double lineTop = Math.Clamp(targetY - (_aimTargetZonePreviewLine.Height / 2.0), 0.0, AimTargetPreviewBoxHeight - _aimTargetZonePreviewLine.Height);
+            double markerLeft = (AimTargetPreviewBoxWidth / 2.0) - (_aimTargetZonePreviewMarker.Width / 2.0);
+            double markerTop = Math.Clamp(targetY - (_aimTargetZonePreviewMarker.Height / 2.0), 0.0, AimTargetPreviewBoxHeight - _aimTargetZonePreviewMarker.Height);
+
+            Canvas.SetLeft(_aimTargetZonePreviewLine, 0);
+            Canvas.SetTop(_aimTargetZonePreviewLine, lineTop);
+            Canvas.SetLeft(_aimTargetZonePreviewMarker, markerLeft);
+            Canvas.SetTop(_aimTargetZonePreviewMarker, markerTop);
+            _aimTargetZonePreviewText.Text = $"Live aim point preview: {Math.Round(ratio * 100.0)}% from the top of the detected box.";
+        }
+
         // PDW == PlayerDetectionWindow
         public Dictionary<string, dynamic> OverlayProperties = new()
         {
@@ -725,6 +947,15 @@ namespace AimmyWPF
         {
             InitializeComponent();
             this.Title = Path.GetFileNameWithoutExtension(Assembly.GetExecutingAssembly().Location);
+            _persistentSaveTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(350)
+            };
+            _persistentSaveTimer.Tick += (_, __) =>
+            {
+                _persistentSaveTimer.Stop();
+                PersistRuntimeState();
+            };
 
             // Check to see if certain items are installed
             RequirementsManager RM = new();
@@ -875,6 +1106,7 @@ namespace AimmyWPF
             {
                 aimmySettings["MiniHud_X"] = x;
                 aimmySettings["MiniHud_Y"] = y;
+                QueuePersistentSave();
             };
             SecondaryWindows.HudOverlay.CustomX = GetSettingDouble("MiniHud_X", -1);
             SecondaryWindows.HudOverlay.CustomY = GetSettingDouble("MiniHud_Y", -1);
@@ -936,6 +1168,8 @@ namespace AimmyWPF
             {
                 MessageBox.Show("Github is irretrieveable right now, the Downloadable Model menu will not work right now, sorry!");
             }
+            _allowPersistentAutosave = true;
+            QueuePersistentSave();
             System.IO.File.WriteAllText("startup.log", "Window_Loaded completed successfully.");
         }
 
@@ -1589,20 +1823,28 @@ namespace AimmyWPF
 
         private void UpdateHudOverlayState()
         {
-            SecondaryWindows.HudOverlay.CustomOpacity = GetSettingDouble("MiniHud_Opacity", 1.0);
-            SecondaryWindows.HudOverlay.CustomScale = GetSettingDouble("MiniHud_Scale", 1.0);
-            if (_hudOverlay != null) {
-               _hudOverlay.SetUnlocked(GetSettingBool("MiniHud_UnlockPosition", false));
-            }
-            bool aimUnlocked = IsAimbotEnabled() && (!IsAimHoldRequired() || IsHolding_Binding);
-            SecondaryWindows.HudOverlay.ModeText = IsAimHoldRequired()
-                ? $"Aim: {Bools.AimHoldMode ?? "Hold"}"
-                : "Aim: Toggle";
-            SecondaryWindows.HudOverlay.PatternText = string.IsNullOrWhiteSpace(_loadedRecoilPatternPath)
-                ? "none"
-                : Path.GetFileName(_loadedRecoilPatternPath);
-            SecondaryWindows.HudOverlay.AimStatusText = aimUnlocked ? "Aim unlocked" : "Aim locked";
-            SecondaryWindows.HudOverlay.AimStatusBrush = aimUnlocked ? Brushes.LimeGreen : Brushes.IndianRed;
+            Action update = () =>
+            {
+                SecondaryWindows.HudOverlay.CustomOpacity = GetSettingDouble("MiniHud_Opacity", 1.0);
+                SecondaryWindows.HudOverlay.CustomScale = GetSettingDouble("MiniHud_Scale", 1.0);
+                if (_hudOverlay != null)
+                    _hudOverlay.SetUnlocked(GetSettingBool("MiniHud_UnlockPosition", false));
+
+                bool aimUnlocked = IsAimbotEnabled() && (!IsAimHoldRequired() || IsHolding_Binding);
+                SecondaryWindows.HudOverlay.ModeText = IsAimHoldRequired()
+                    ? $"Aim: {Bools.AimHoldMode ?? "Hold"}"
+                    : "Aim: Toggle";
+                SecondaryWindows.HudOverlay.PatternText = string.IsNullOrWhiteSpace(_loadedRecoilPatternPath)
+                    ? "none"
+                    : Path.GetFileName(_loadedRecoilPatternPath);
+                SecondaryWindows.HudOverlay.AimStatusText = aimUnlocked ? "Aim unlocked" : "Aim locked";
+                SecondaryWindows.HudOverlay.AimStatusBrush = aimUnlocked ? Brushes.LimeGreen : Brushes.IndianRed;
+            };
+
+            if (Dispatcher.CheckAccess())
+                update();
+            else
+                Dispatcher.BeginInvoke(update);
         }
 
         private bool RegisterLoopFailure(string loopName, Exception ex, ref int errorCount, ref DateTime firstErrorUtc)
@@ -1902,6 +2144,9 @@ namespace AimmyWPF
                     return;
                 }
 
+                bool overlayActive = IsDetectionOverlayActive();
+                EnsureDetectionOverlayVisibility(overlayActive);
+
                 double YOffset = GetSettingDouble("Y_Offset");
                 double XOffset = GetSettingDouble("X_Offset");
 
@@ -1909,9 +2154,6 @@ namespace AimmyWPF
                 float mappedBoxY = physicalDetectionBox.Y + closestPrediction.Rectangle.Y;
                 float mappedBoxWidth = Math.Max(1f, closestPrediction.Rectangle.Width);
                 float mappedBoxHeight = Math.Max(1f, closestPrediction.Rectangle.Height);
-
-
-
 
                 float anchorX = mappedBoxX + (mappedBoxWidth / 2.0f);
                 float headRatio = (float)Math.Clamp(GetSettingDouble("Aim_HeadRatio", 0.15), 0.0, 1.0);
@@ -1922,47 +2164,70 @@ namespace AimmyWPF
                 int detectedX = Math.Clamp((int)(anchorX + XOffset), minScreenX, maxScreenX);
                 int detectedY = Math.Clamp((int)(anchorY + YOffset), minScreenY, maxScreenY);
 
-                double baseMarkerSize = Convert.ToDouble(OverlayProperties["PDW_Size"]);
-                double minBoxSizeDip = Math.Max(6.0, baseMarkerSize * 0.25);
+                double unfilteredLeftDip = 0;
+                double unfilteredTopDip = 0;
+                double unfilteredBoxWidthDip = 0;
+                double unfilteredBoxHeightDip = 0;
+                double detectedLeftDip = 0;
+                double detectedTopDip = 0;
+                double detectedBoxWidthDip = 0;
+                double detectedBoxHeightDip = 0;
+                double overlayWidthDip = 0;
+                double overlayHeightDip = 0;
+                double minBoxSizeDip = 0;
 
-                System.Windows.Point unfilteredTopLeftDipPoint = DetectedPlayerOverlay.ScreenToWindow(new System.Windows.Point(mappedBoxX, mappedBoxY));
-                System.Windows.Point unfilteredBottomRightDipPoint = DetectedPlayerOverlay.ScreenToWindow(new System.Windows.Point(mappedBoxX + mappedBoxWidth, mappedBoxY + mappedBoxHeight));
+                if (overlayActive)
+                {
+                    DetectedPlayerOverlay.UpdateWindowBounds();
+                    DetectedPlayerOverlay.UpdateLayout();
+                    double baseMarkerSize = Convert.ToDouble(OverlayProperties["PDW_Size"]);
+                    minBoxSizeDip = Math.Max(6.0, baseMarkerSize * 0.25);
 
-                double unfilteredLeftDip = Math.Min(unfilteredTopLeftDipPoint.X, unfilteredBottomRightDipPoint.X);
-                double unfilteredTopDip = Math.Min(unfilteredTopLeftDipPoint.Y, unfilteredBottomRightDipPoint.Y);
-                double unfilteredBoxWidthDip = Math.Abs(unfilteredBottomRightDipPoint.X - unfilteredTopLeftDipPoint.X);
-                double unfilteredBoxHeightDip = Math.Abs(unfilteredBottomRightDipPoint.Y - unfilteredTopLeftDipPoint.Y);
+                    bool hasUnfilteredTopLeft = DetectedPlayerOverlay.TryScreenToWindow(new System.Windows.Point(mappedBoxX, mappedBoxY), out System.Windows.Point unfilteredTopLeftDipPoint);
+                    bool hasUnfilteredBottomRight = DetectedPlayerOverlay.TryScreenToWindow(new System.Windows.Point(mappedBoxX + mappedBoxWidth, mappedBoxY + mappedBoxHeight), out System.Windows.Point unfilteredBottomRightDipPoint);
+                    bool hasDetectedTopLeft = DetectedPlayerOverlay.TryScreenToWindow(new System.Windows.Point(mappedBoxX, mappedBoxY), out System.Windows.Point detectedTopLeftDipPoint);
+                    bool hasDetectedBottomRight = DetectedPlayerOverlay.TryScreenToWindow(new System.Windows.Point(mappedBoxX + mappedBoxWidth, mappedBoxY + mappedBoxHeight), out System.Windows.Point detectedBottomRightDipPoint);
 
-                // Draw the red box around the actual detected rectangle.
-                // Anchor offsets are for aiming and triggering only.
-                System.Windows.Point detectedTopLeftDipPoint = DetectedPlayerOverlay.ScreenToWindow(new System.Windows.Point(mappedBoxX, mappedBoxY));
-                System.Windows.Point detectedBottomRightDipPoint = DetectedPlayerOverlay.ScreenToWindow(new System.Windows.Point(mappedBoxX + mappedBoxWidth, mappedBoxY + mappedBoxHeight));
+                    if (!(hasUnfilteredTopLeft && hasUnfilteredBottomRight && hasDetectedTopLeft && hasDetectedBottomRight))
+                    {
+                        double dpiX = Math.Max(0.01, AIModel.DpiScaleX);
+                        double dpiY = Math.Max(0.01, AIModel.DpiScaleY);
+                        double overlayLeftDip = DetectedPlayerOverlay.Left;
+                        double overlayTopDip = DetectedPlayerOverlay.Top;
 
-                double detectedLeftDip = Math.Min(detectedTopLeftDipPoint.X, detectedBottomRightDipPoint.X);
-                double detectedTopDip = Math.Min(detectedTopLeftDipPoint.Y, detectedBottomRightDipPoint.Y);
-                double detectedBoxWidthDip = Math.Abs(detectedBottomRightDipPoint.X - detectedTopLeftDipPoint.X);
-                double detectedBoxHeightDip = Math.Abs(detectedBottomRightDipPoint.Y - detectedTopLeftDipPoint.Y);
+                        unfilteredTopLeftDipPoint = new System.Windows.Point((mappedBoxX / dpiX) - overlayLeftDip, (mappedBoxY / dpiY) - overlayTopDip);
+                        unfilteredBottomRightDipPoint = new System.Windows.Point(((mappedBoxX + mappedBoxWidth) / dpiX) - overlayLeftDip, ((mappedBoxY + mappedBoxHeight) / dpiY) - overlayTopDip);
+                        detectedTopLeftDipPoint = unfilteredTopLeftDipPoint;
+                        detectedBottomRightDipPoint = unfilteredBottomRightDipPoint;
+                    }
 
-                unfilteredBoxWidthDip = Math.Max(minBoxSizeDip, unfilteredBoxWidthDip);
-                unfilteredBoxHeightDip = Math.Max(minBoxSizeDip, unfilteredBoxHeightDip);
-                detectedBoxWidthDip = Math.Max(1.0, detectedBoxWidthDip);
-                detectedBoxHeightDip = Math.Max(1.0, detectedBoxHeightDip);
+                    unfilteredLeftDip = Math.Min(unfilteredTopLeftDipPoint.X, unfilteredBottomRightDipPoint.X);
+                    unfilteredTopDip = Math.Min(unfilteredTopLeftDipPoint.Y, unfilteredBottomRightDipPoint.Y);
+                    unfilteredBoxWidthDip = Math.Abs(unfilteredBottomRightDipPoint.X - unfilteredTopLeftDipPoint.X);
+                    unfilteredBoxHeightDip = Math.Abs(unfilteredBottomRightDipPoint.Y - unfilteredTopLeftDipPoint.Y);
 
-                double overlayWidthDip = DetectedPlayerOverlay.ActualWidth > 0 ? DetectedPlayerOverlay.ActualWidth : DetectedPlayerOverlay.Width;
-                double overlayHeightDip = DetectedPlayerOverlay.ActualHeight > 0 ? DetectedPlayerOverlay.ActualHeight : DetectedPlayerOverlay.Height;
-                if (double.IsNaN(overlayWidthDip) || overlayWidthDip <= 0) overlayWidthDip = SystemParameters.VirtualScreenWidth;
-                if (double.IsNaN(overlayHeightDip) || overlayHeightDip <= 0) overlayHeightDip = SystemParameters.VirtualScreenHeight;
+                    // Draw the red box around the actual detected rectangle.
+                    // Anchor offsets are for aiming and triggering only.
+                    detectedLeftDip = Math.Min(detectedTopLeftDipPoint.X, detectedBottomRightDipPoint.X);
+                    detectedTopDip = Math.Min(detectedTopLeftDipPoint.Y, detectedBottomRightDipPoint.Y);
+                    detectedBoxWidthDip = Math.Abs(detectedBottomRightDipPoint.X - detectedTopLeftDipPoint.X);
+                    detectedBoxHeightDip = Math.Abs(detectedBottomRightDipPoint.Y - detectedTopLeftDipPoint.Y);
 
-                unfilteredLeftDip = Math.Clamp(unfilteredLeftDip, 0, Math.Max(0, overlayWidthDip - unfilteredBoxWidthDip));
-                unfilteredTopDip = Math.Clamp(unfilteredTopDip, 0, Math.Max(0, overlayHeightDip - unfilteredBoxHeightDip));
-                detectedLeftDip = Math.Clamp(detectedLeftDip, 0, Math.Max(0, overlayWidthDip - detectedBoxWidthDip));
-                detectedTopDip = Math.Clamp(detectedTopDip, 0, Math.Max(0, overlayHeightDip - detectedBoxHeightDip));
+                    unfilteredBoxWidthDip = Math.Max(minBoxSizeDip, unfilteredBoxWidthDip);
+                    unfilteredBoxHeightDip = Math.Max(minBoxSizeDip, unfilteredBoxHeightDip);
+                    detectedBoxWidthDip = Math.Max(1.0, detectedBoxWidthDip);
+                    detectedBoxHeightDip = Math.Max(1.0, detectedBoxHeightDip);
 
-                int physicalTargetX = detectedX;
-                int physicalTargetY = detectedY;
+                    overlayWidthDip = DetectedPlayerOverlay.ActualWidth > 0 ? DetectedPlayerOverlay.ActualWidth : DetectedPlayerOverlay.Width;
+                    overlayHeightDip = DetectedPlayerOverlay.ActualHeight > 0 ? DetectedPlayerOverlay.ActualHeight : DetectedPlayerOverlay.Height;
+                    if (double.IsNaN(overlayWidthDip) || overlayWidthDip <= 0) overlayWidthDip = SystemParameters.VirtualScreenWidth;
+                    if (double.IsNaN(overlayHeightDip) || overlayHeightDip <= 0) overlayHeightDip = SystemParameters.VirtualScreenHeight;
 
-                bool overlayActive = IsDetectionOverlayActive();
-                EnsureDetectionOverlayVisibility(overlayActive);
+                    unfilteredLeftDip = Math.Clamp(unfilteredLeftDip, 0, Math.Max(0, overlayWidthDip - unfilteredBoxWidthDip));
+                    unfilteredTopDip = Math.Clamp(unfilteredTopDip, 0, Math.Max(0, overlayHeightDip - unfilteredBoxHeightDip));
+                    detectedLeftDip = Math.Clamp(detectedLeftDip, 0, Math.Max(0, overlayWidthDip - detectedBoxWidthDip));
+                    detectedTopDip = Math.Clamp(detectedTopDip, 0, Math.Max(0, overlayHeightDip - detectedBoxHeightDip));
+                }
 
                 Detection detection = new()
                 {
@@ -2038,7 +2303,15 @@ namespace AimmyWPF
 
                 if (overlayActive && Bools.ShowPrediction)
                 {
-                    System.Windows.Point predictionCenterDip = DetectedPlayerOverlay.ScreenToWindow(new System.Windows.Point(predictedPosition.X, predictedPosition.Y));
+                    bool hasPredictionCenter = DetectedPlayerOverlay.TryScreenToWindow(new System.Windows.Point(predictedPosition.X, predictedPosition.Y), out System.Windows.Point predictionCenterDip);
+                    if (!hasPredictionCenter)
+                    {
+                        double dpiX = Math.Max(0.01, AIModel.DpiScaleX);
+                        double dpiY = Math.Max(0.01, AIModel.DpiScaleY);
+                        predictionCenterDip = new System.Windows.Point(
+                            (predictedPosition.X / dpiX) - DetectedPlayerOverlay.Left,
+                            (predictedPosition.Y / dpiY) - DetectedPlayerOverlay.Top);
+                    }
                     double predictionBoxWidthDip = minBoxSizeDip; double predictionBoxHeightDip = minBoxSizeDip;
                     double predictionLeftDip = predictionCenterDip.X - (predictionBoxWidthDip / 2.0);
                     double predictionTopDip = predictionCenterDip.Y - (predictionBoxHeightDip / 2.0);
@@ -2167,8 +2440,12 @@ namespace AimmyWPF
                             // Log($"Loop Heartbeat: Idle (No features enabled) | Aimbot={isAimbotOn} Constant={isConstantTracking} Trigger={isTriggerOn} Recoil={isRecoilOn} Collect={IsCollectDataEnabled()} Visual={needsVisualDetection} Holding={isBindingHeld} ModelLoaded={_onnxModel != null}");
                             _lastIdleHeartbeatLog = now;
                         }
-                        AIModel.DpiScaleX = VisualTreeHelper.GetDpi(this).DpiScaleX;
-                        AIModel.DpiScaleY = VisualTreeHelper.GetDpi(this).DpiScaleY;
+                        Dispatcher.Invoke(() =>
+                        {
+                            DpiScale dpi = VisualTreeHelper.GetDpi(this);
+                            AIModel.DpiScaleX = dpi.DpiScaleX;
+                            AIModel.DpiScaleY = dpi.DpiScaleY;
+                        });
                     }
                     UpdateHudOverlayState();
                     ResetLoopFailureState(ref _captureLoopErrorCount, ref _captureLoopErrorWindowStartUtc);
@@ -2264,6 +2541,7 @@ namespace AimmyWPF
 
             HandleToggleSpecificActions(toggle);
             SaveSessionState();
+            QueuePersistentSave();
         }
 
         private void SetToggleStatesOnModelNotSelected()
@@ -2324,19 +2602,22 @@ namespace AimmyWPF
                 case "ShowCurrentDetectedPlayer":
                     if ((bool)toggle.Reader.Tag)
                         ForceToggle("ShowDetectedPlayerWindow", true);
-                    ((bool)toggle.Reader.Tag ? (Action)(() => DetectedPlayerOverlay.DetectedPlayerFocus.Visibility = Visibility.Visible) : () => DetectedPlayerOverlay.DetectedPlayerFocus.Visibility = Visibility.Collapsed)();
+                    else
+                        DetectedPlayerOverlay.DetectedPlayerFocus.Visibility = Visibility.Collapsed;
                     break;
 
                 case "ShowUnfilteredDetectedPlayer":
                     if ((bool)toggle.Reader.Tag)
                         ForceToggle("ShowDetectedPlayerWindow", true);
-                    ((bool)toggle.Reader.Tag ? (Action)(() => DetectedPlayerOverlay.UnfilteredPlayerFocus.Visibility = Visibility.Visible) : () => DetectedPlayerOverlay.UnfilteredPlayerFocus.Visibility = Visibility.Collapsed)();
+                    else
+                        DetectedPlayerOverlay.UnfilteredPlayerFocus.Visibility = Visibility.Collapsed;
                     break;
 
                 case "ShowAIPrediction":
                     if ((bool)toggle.Reader.Tag)
                         ForceToggle("ShowDetectedPlayerWindow", true);
-                    ((bool)toggle.Reader.Tag ? (Action)(() => DetectedPlayerOverlay.PredictionFocus.Visibility = Visibility.Visible) : () => DetectedPlayerOverlay.PredictionFocus.Visibility = Visibility.Collapsed)();
+                    else
+                        DetectedPlayerOverlay.PredictionFocus.Visibility = Visibility.Collapsed;
                     break;
 
                 case "TopMost":
@@ -2369,6 +2650,7 @@ namespace AimmyWPF
             toggleState[toggleName] = targetState;
             HandleToggleSpecificActions(toggle);
             SaveSessionState();
+            QueuePersistentSave();
         }
 
         private bool IsDetectionOverlayActive()
@@ -2526,6 +2808,7 @@ namespace AimmyWPF
             }
 
             ResetMenuColors();
+            QueuePersistentSave();
         }
 
         private void ApplyMenuAnimations(MenuPosition position)
@@ -2757,6 +3040,7 @@ namespace AimmyWPF
                     Change_FOVColor.ColorChangingBorder.Background = new SolidColorBrush(Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B));
                     OverlayProperties["FOV_Color"] = Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B).ToString();
                     AwfulPropertyChanger.PostColor(Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B));
+                    QueuePersistentSave();
                 }
             };
             AimScroller.Children.Add(Change_FOVColor);
@@ -2899,22 +3183,6 @@ namespace AimmyWPF
 
             AimScroller.Children.Add(XOffset);
 
-            ASlider AimTargetZone = new(this, "Aim Target Zone", "%",
-                "Controls how far from the top of the detection box the aim point is placed. Lower values aim higher on the target.",
-                1);
-
-            AimTargetZone.Slider.Minimum = 0;
-            AimTargetZone.Slider.Maximum = 100;
-            AimTargetZone.Slider.Value = Math.Round(GetSettingDouble("Aim_HeadRatio", 0.15) * 100.0);
-            AimTargetZone.Slider.TickFrequency = 1;
-            AimTargetZone.Slider.ValueChanged += (s, x) =>
-            {
-                aimmySettings["Aim_HeadRatio"] = AimTargetZone.Slider.Value / 100.0;
-                MarkAimStyleAsCustomIfNeeded();
-            };
-
-            AimScroller.Children.Add(AimTargetZone);
-
             ASlider PredictionStrength = new(this, "Prediction Strength", "Strength",
                 "Scales how much of the Kalman lead is applied to the next aim estimate.",
                 0.01);
@@ -2946,7 +3214,7 @@ namespace AimmyWPF
                     AimMaxStep.Slider,
                     AimDeadzone.Slider,
                     MouseJitter.Slider,
-                    AimTargetZone.Slider);
+                    _aimTargetZoneSliderControl);
             };
             AimScroller.Children.Add(PremiumSmoothStyle);
 
@@ -2961,7 +3229,7 @@ namespace AimmyWPF
                     AimMaxStep.Slider,
                     AimDeadzone.Slider,
                     MouseJitter.Slider,
-                    AimTargetZone.Slider);
+                    _aimTargetZoneSliderControl);
             };
             AimScroller.Children.Add(BalancedStyle);
 
@@ -2976,7 +3244,7 @@ namespace AimmyWPF
                     AimMaxStep.Slider,
                     AimDeadzone.Slider,
                     MouseJitter.Slider,
-                    AimTargetZone.Slider);
+                    _aimTargetZoneSliderControl);
             };
             AimScroller.Children.Add(AggressiveStyle);
 
@@ -3481,9 +3749,19 @@ namespace AimmyWPF
 
         private void FileWatcher_Reload(object sender, FileSystemEventArgs e)
         {
+            DateTime now = DateTime.UtcNow;
+            if ((now - _lastModelListRefreshUtc).TotalMilliseconds < 250)
+                return;
+
+            _lastModelListRefreshUtc = now;
             Dispatcher.Invoke(() =>
             {
+                string previouslySelectedModel = SelectorListBox.SelectedItem?.ToString() ?? lastLoadedModel;
                 LoadModelsIntoListBox();
+                string currentlySelectedModel = SelectorListBox.SelectedItem?.ToString() ?? lastLoadedModel;
+                bool selectedModelChanged = !string.Equals(previouslySelectedModel, currentlySelectedModel, StringComparison.OrdinalIgnoreCase);
+                bool activeModelFileChanged = !string.IsNullOrWhiteSpace(currentlySelectedModel)
+                    && string.Equals(Path.GetFileName(e.FullPath), currentlySelectedModel, StringComparison.OrdinalIgnoreCase);
 
                 // Maybe I broke something removing this, fix it, because it was causing a bug where ListBox stops working when something was added =)
                 // nori
@@ -3493,7 +3771,8 @@ namespace AimmyWPF
                     AIModel.DpiScaleX = dpi.DpiScaleX;
                     AIModel.DpiScaleY = dpi.DpiScaleY;
 
-                    InitializeModel();
+                    if (_onnxModel == null || selectedModelChanged || activeModelFileChanged)
+                        InitializeModel(forceReload: activeModelFileChanged);
                 }
                 catch (Exception ex)
                 {
@@ -3516,7 +3795,7 @@ namespace AimmyWPF
 
         private bool ModelLoadDebounce = false;
 
-        private void InitializeModel()
+        private void InitializeModel(bool forceReload = false)
         {
             if (!ModelLoadDebounce)
             {
@@ -3525,6 +3804,18 @@ namespace AimmyWPF
                 string selectedModel = SelectorListBox.SelectedItem?.ToString();
                 if (selectedModel == null) 
                 {
+                    ModelLoadDebounce = false;
+                    return;
+                }
+
+                if (!forceReload
+                    && _onnxModel != null
+                    && string.Equals(_loadedModelName, selectedModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    ApplyModelSettings(_onnxModel);
+                    SelectedModelNotifier.Content = "Loaded Model: " + selectedModel;
+                    lastLoadedModel = selectedModel;
+                    SaveSessionState();
                     ModelLoadDebounce = false;
                     return;
                 }
@@ -3538,7 +3829,7 @@ namespace AimmyWPF
                         ConfidenceThreshold = (float)(GetSettingDouble("AI_Min_Conf", 5.0) / 100.0),
                         CollectData = toggleState["CollectData"],
                         FovSize = GetSettingInt("FOV_Size", 320),
-                        OutputBoxFormat = ParseBoxFormat(GetSettingString("Aim_BoxFormat", "center"))
+                        OutputBoxFormat = ParseBoxFormat(GetSettingString("Aim_BoxFormat", "auto"))
                     };
 
                     _modelAccessGate.Wait();
@@ -3560,6 +3851,7 @@ namespace AimmyWPF
 
                     SelectedModelNotifier.Content = "Loaded Model: " + selectedModel;
                     lastLoadedModel = selectedModel;
+                    _loadedModelName = selectedModel;
                     SaveSessionState();
 
                     // Log monitor info for coordinate mapping diagnostics
@@ -3582,35 +3874,62 @@ namespace AimmyWPF
 
         private void LoadModelsIntoListBox()
         {
-            string[] onnxFiles = Directory.GetFiles("bin/models", "*.onnx");
-            SelectorListBox.Items.Clear();
+            string[] onnxFiles = Directory.Exists("bin/models")
+                ? Directory.GetFiles("bin/models", "*.onnx")
+                : Array.Empty<string>();
+            string desiredSelection = SelectorListBox.SelectedItem?.ToString();
+            if (string.IsNullOrWhiteSpace(desiredSelection))
+                desiredSelection = lastLoadedModel;
 
-            foreach (string filePath in onnxFiles)
+            _suppressModelSelectionChange = true;
+            try
             {
-                SelectorListBox.Items.Add(Path.GetFileName(filePath));
-            }
+                SelectorListBox.Items.Clear();
 
-            if (SelectorListBox.Items.Count > 0)
-            {
-                string firstModel = SelectorListBox.Items[0].ToString();
-
-                if (!SelectorListBox.Items.Contains(lastLoadedModel) || lastLoadedModel == "N/A")
+                foreach (string filePath in onnxFiles)
                 {
-                    SelectorListBox.SelectedIndex = 0;
-                    lastLoadedModel = firstModel;
+                    SelectorListBox.Items.Add(Path.GetFileName(filePath));
+                }
+
+                if (SelectorListBox.Items.Count > 0)
+                {
+                    string firstModel = SelectorListBox.Items[0].ToString();
+
+                    if (string.IsNullOrWhiteSpace(desiredSelection)
+                        || !SelectorListBox.Items.Contains(desiredSelection)
+                        || desiredSelection == "N/A")
+                    {
+                        SelectorListBox.SelectedIndex = 0;
+                        lastLoadedModel = firstModel;
+                    }
+                    else
+                    {
+                        SelectorListBox.SelectedItem = desiredSelection;
+                        lastLoadedModel = desiredSelection;
+                    }
+
+                    SelectedModelNotifier.Content = "Loaded Model: " + lastLoadedModel;
                 }
                 else
                 {
-                    SelectorListBox.SelectedItem = lastLoadedModel;
+                    SelectedModelNotifier.Content = "Loaded Model: N/A";
+                    lastLoadedModel = "N/A";
+                    _loadedModelName = string.Empty;
                 }
-
-                SelectedModelNotifier.Content = "Loaded Model: " + lastLoadedModel;
             }
+            finally
+            {
+                _suppressModelSelectionChange = false;
+            }
+
             ModelLoadDebounce = false;
         }
 
         private void SelectorListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            if (_suppressModelSelectionChange)
+                return;
+
             InitializeModel();
         }
 
@@ -3679,6 +3998,13 @@ namespace AimmyWPF
                 SyncAimSettingsWithPresetIfSelected();
                 ApplyMenuAccentColor(GetSettingString("GUI_AccentColor", DefaultMenuAccentColor));
                 SyncRecoilSettingsFromConfig();
+                ApplyModelSettings(_onnxModel);
+                ResetAimMovementState();
+                if (FOVOverlay != null)
+                {
+                    FOVOverlay.FovSize = GetSettingInt("FOV_Size", 320);
+                    AwfulPropertyChanger.PostNewFOVSize();
+                }
                 _patternCycleBindingManager?.SetBinding(GetSettingString("Recoil_CycleKey", "F11"));
                 _recoilRecordingBindingManager?.SetBinding(GetSettingString("Recoil_RecordingKey", "F12"));
                 bool recoilLoaded = TryLoadConfiguredRecoilPattern(out string recoilError);
@@ -3759,15 +4085,24 @@ namespace AimmyWPF
 
         private void ReloadMenu()
         {
-            AimScroller.Children.Clear();
-            TriggerScroller.Children.Clear();
-            RecoilScroller.Children.Clear();
-            SettingsScroller.Children.Clear();
+            WithPersistentNotificationsSuspended(() =>
+            {
+                AimScroller.Children.Clear();
+                TriggerScroller.Children.Clear();
+                RecoilScroller.Children.Clear();
+                SettingsScroller.Children.Clear();
+                _aimTargetZoneSliderControl = null;
+                _aimTargetZonePreviewLine = null;
+                _aimTargetZonePreviewMarker = null;
+                _aimTargetZonePreviewText = null;
 
-            LoadAimMenu();
-            LoadTriggerMenu();
-            LoadRecoilMenu();
-            LoadSettingsMenu();
+                LoadAimMenu();
+                LoadTriggerMenu();
+                LoadRecoilMenu();
+                LoadSettingsMenu();
+            });
+
+            UpdateAimTargetZonePreview();
         }
 
         private void SyncRecoilSettingsFromConfig()
@@ -3906,6 +4241,25 @@ namespace AimmyWPF
 
             SettingsScroller.Children.Add(AIMinimumConfidence);
 
+            SettingsScroller.Children.Add(new ALabel("Aim Point"));
+
+            ASlider AimTargetZone = new(this, "AI Target Zone", "%",
+                "Controls how far from the top of the detection box the aim point is placed. Lower values aim higher on the target.",
+                1);
+            _aimTargetZoneSliderControl = AimTargetZone.Slider;
+            AimTargetZone.Slider.Minimum = 0;
+            AimTargetZone.Slider.Maximum = 100;
+            AimTargetZone.Slider.Value = Math.Round(GetSettingDouble("Aim_HeadRatio", 0.15) * 100.0);
+            AimTargetZone.Slider.TickFrequency = 1;
+            AimTargetZone.Slider.ValueChanged += (s, x) =>
+            {
+                aimmySettings["Aim_HeadRatio"] = AimTargetZone.Slider.Value / 100.0;
+                MarkAimStyleAsCustomIfNeeded();
+                UpdateAimTargetZonePreview();
+            };
+            SettingsScroller.Children.Add(AimTargetZone);
+            SettingsScroller.Children.Add(CreateAimTargetZonePreview());
+
             bool topMostInitialState = toggleState.ContainsKey("TopMost") ? toggleState["TopMost"] : false;
 
             AToggle TopMost = new(this, "UI TopMost",
@@ -4023,6 +4377,7 @@ namespace AimmyWPF
                 CycleComPort.KeyNotifier.Content = nextPort;
 
                 if (Bools.UseHardwareMouse) HardwareMouse.Initialize(nextPort);
+                QueuePersistentSave();
             };
             SettingsScroller.Children.Add(CycleComPort);
 
@@ -4061,47 +4416,10 @@ namespace AimmyWPF
             // Prevent saving overwrite
             if (SavedData) return;
 
-            // Save to Default Config
-            try
-            {
-                var extendedSettings = new Dictionary<string, object>();
-                foreach (var kvp in aimmySettings)
-                {
-                    extendedSettings[kvp.Key] = kvp.Value;
-                }
-
-                // Add topmost
-                extendedSettings["TopMost"] = this.Topmost ? true : false;
-
-                string json = JsonConvert.SerializeObject(extendedSettings, Formatting.Indented);
-                File.WriteAllText("bin/configs/Default.cfg", json);
-            }
-            catch (Exception x)
-            {
-                Console.WriteLine("Error saving configuration: " + x.Message);
-            }
-
-            // Save Overlay Properties Data
-            // Nori
-            try
-            {
-                var OverlaySettings = new Dictionary<string, object>();
-                foreach (var kvp in OverlayProperties)
-                {
-                    OverlaySettings[kvp.Key] = kvp.Value;
-                }
-
-                string json = JsonConvert.SerializeObject(OverlaySettings, Formatting.Indented);
-                File.WriteAllText("bin/Overlay.cfg", json);
-            }
-            catch (Exception x)
-            {
-                Console.WriteLine("Error saving configuration: " + x.Message);
-            }
-
-            BuildToggleSnapshot();
-            SaveSessionState();
+            _persistentSaveTimer.Stop();
+            PersistRuntimeState();
             SavedData = true;
+            DebugLog.Flush();
 
             // Unhook keybind hooker
             bindingManager.StopListening();
