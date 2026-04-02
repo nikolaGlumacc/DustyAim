@@ -68,6 +68,7 @@ namespace AimmyWPF
         private DateTime _nextRapidFireClickUtc = DateTime.MinValue;
         private bool _wasRapidFireLeftMouseDown = false;
         private DateTime _rapidFireLmbGraceStart = DateTime.MinValue;
+        private bool _rapidFireInjectedDown = false;// Track whether we injected a held click
         private const int RapidFireLmbGraceMs = 150; // ignore brief "not held" from our own injection
         private readonly SemaphoreSlim _rapidFireClickGate = new(1, 1);
         private CancellationTokenSource _rapidFireLoopCts;
@@ -558,6 +559,13 @@ namespace AimmyWPF
             model.OutputBoxFormat = ParseBoxFormat(GetSettingString("Aim_BoxFormat", "auto"));
         }
 
+        // Add this field near the other static fields
+        private static readonly HashSet<string> _nonPersistentToggles = new(StringComparer.OrdinalIgnoreCase)
+{
+    "RecoilRapidFire",
+    "RecoilControl"
+};
+
         private Dictionary<string, bool> BuildToggleSnapshot()
         {
             Dictionary<string, bool> snapshot = new(toggleState);
@@ -567,6 +575,10 @@ namespace AimmyWPF
                 if (toggle?.Reader?.Tag is bool state)
                     snapshot[name] = state;
             }
+
+            // Strip out non‑persistent toggles before saving
+            foreach (var key in _nonPersistentToggles)
+                snapshot.Remove(key);
 
             return snapshot;
         }
@@ -1469,6 +1481,11 @@ namespace AimmyWPF
 
         private void ResetRapidFireState()
         {
+            if (_rapidFireInjectedDown)
+            {
+                SendMouseInputSafe(MOUSEEVENTF_LEFTUP);
+                _rapidFireInjectedDown = false;
+            }
             _nextRapidFireClickUtc = DateTime.MinValue;
             _wasRapidFireLeftMouseDown = false;
             _rapidFireLmbGraceStart = DateTime.MinValue;
@@ -2107,8 +2124,11 @@ namespace AimmyWPF
                 //   2. short delay
                 //   3. LEFTDOWN — re-presses, ready for next cycle; GetAsyncKeyState now reads "held"
                 SendMouseInputSafe(MOUSEEVENTF_LEFTUP);
+                _rapidFireInjectedDown = false;
                 await Task.Delay(20);
+
                 SendMouseInputSafe(MOUSEEVENTF_LEFTDOWN);
+                _rapidFireInjectedDown = true;
 
                 _nextRapidFireClickUtc = now.AddMilliseconds(delayMs);
             }
