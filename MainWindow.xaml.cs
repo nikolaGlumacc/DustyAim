@@ -63,8 +63,12 @@ namespace AimmyWPF
         private bool _wasLeftMouseDown = false;
         private double _recoilRemainderX = 0;
         private double _recoilRemainderY = 0;
+        private double _recoilSoftTargetX = 0;   // recoil softness accumulator
+        private double _recoilSoftTargetY = 0;
         private DateTime _nextRapidFireClickUtc = DateTime.MinValue;
         private bool _wasRapidFireLeftMouseDown = false;
+        private DateTime _rapidFireLmbGraceStart = DateTime.MinValue;
+        private const int RapidFireLmbGraceMs = 150; // ignore brief "not held" from our own injection
         private readonly SemaphoreSlim _rapidFireClickGate = new(1, 1);
         private CancellationTokenSource _rapidFireLoopCts;
         private MenuPosition _selectedMenuPosition = MenuPosition.AimMenu;
@@ -189,6 +193,7 @@ namespace AimmyWPF
             { "Recoil_AdsOnly", false },
             { "Recoil_RapidFire", false },
             { "Recoil_RapidFireDelayMs", 90.0 },
+            { "Recoil_Softness", 0.0 },
             { "Recoil_RecordingKey", "F12" },
             { "Recoil_CycleKey", "F11" },
             { "Hardware_UseArduino", false },
@@ -1252,6 +1257,11 @@ namespace AimmyWPF
 
         private bool IsBindingCurrentlyHeld()
         {
+            // In Toggle mode the software state is authoritative.
+            // The key has already been physically released by design — do not poll it.
+            if (Bools.AimHoldMode == "Toggle")
+                return IsHolding_Binding;
+
             string binding = bindingManager?.CurrentBinding;
             if (string.IsNullOrWhiteSpace(binding))
                 return IsHolding_Binding;
@@ -1451,13 +1461,17 @@ namespace AimmyWPF
             _recoilPatternIndex = 0;
             _nextRecoilStepUtc = DateTime.MinValue;
             _wasLeftMouseDown = false;
+            _recoilRemainderX = 0;
             _recoilRemainderY = 0;
+            _recoilSoftTargetX = 0;
+            _recoilSoftTargetY = 0;
         }
 
         private void ResetRapidFireState()
         {
             _nextRapidFireClickUtc = DateTime.MinValue;
             _wasRapidFireLeftMouseDown = false;
+            _rapidFireLmbGraceStart = DateTime.MinValue;
         }
 
         private static bool TryParseDoubleFlexible(string value, out double result)
@@ -1988,14 +2002,39 @@ namespace AimmyWPF
 
             RecoilPatternStep currentStep = pattern[_recoilPatternIndex];
             double recoilScale = Math.Clamp(GetSettingDouble("Recoil_Scale", 1.0), 1.0, 10.0);
-            double scaledX = (-currentStep.Dx * recoilScale) + _recoilRemainderX;
-            double scaledY = (-currentStep.Dy * recoilScale) + _recoilRemainderY;
+            double rawX = -currentStep.Dx * recoilScale;
+            double rawY = -currentStep.Dy * recoilScale;
 
-            int moveX = (int)Math.Round(scaledX);
-            int moveY = (int)Math.Round(scaledY);
+            double softness = Math.Clamp(GetSettingDouble("Recoil_Softness", 0.0), 0.0, 0.95);
+            double applyX, applyY;
 
-            _recoilRemainderX = scaledX - moveX;
-            _recoilRemainderY = scaledY - moveY;
+            if (softness > 0.01)
+            {
+                // Accumulate the step's target movement, then blend toward it each tick.
+                // Higher softness = smaller blend fraction = slower, smoother movement.
+                _recoilSoftTargetX += rawX;
+                _recoilSoftTargetY += rawY;
+
+                double blend = 1.0 - softness;          // e.g. softness 0.7 → blend 30 % per tick
+                applyX = _recoilSoftTargetX * blend + _recoilRemainderX;
+                applyY = _recoilSoftTargetY * blend + _recoilRemainderY;
+                _recoilSoftTargetX -= _recoilSoftTargetX * blend;
+                _recoilSoftTargetY -= _recoilSoftTargetY * blend;
+            }
+            else
+            {
+                // Softness = 0: instant, original behaviour
+                _recoilSoftTargetX = 0;
+                _recoilSoftTargetY = 0;
+                applyX = rawX + _recoilRemainderX;
+                applyY = rawY + _recoilRemainderY;
+            }
+
+            int moveX = (int)Math.Round(applyX);
+            int moveY = (int)Math.Round(applyY);
+
+            _recoilRemainderX = applyX - moveX;
+            _recoilRemainderY = applyY - moveY;
 
             if (moveX != 0 || moveY != 0)
                 SendMouseInputSafe(MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE, moveX, moveY);
@@ -2018,16 +2057,40 @@ namespace AimmyWPF
             }
 
             DateTime now = DateTime.UtcNow;
-            if (!IsLeftMouseButtonHeld())
-            {
-                ResetRapidFireState();
-                return;
-            }
+            bool lmbNow = IsLeftMouseButtonHeld();
 
+            // ── LMB state tracking with grace period ────────────────────────
+            // GetAsyncKeyState reflects our OWN injected LEFTUP events, so it
+            // briefly reads "false" even while the user's finger is still down.
+            // We use a 150 ms grace window to absorb that noise.
             if (!_wasRapidFireLeftMouseDown)
+            {
+                if (!lmbNow) return;                    // user hasn't pressed yet
+                _wasRapidFireLeftMouseDown = true;
+                _rapidFireLmbGraceStart = DateTime.MinValue;
                 _nextRapidFireClickUtc = now;
+            }
+            else
+            {
+                if (lmbNow)
+                {
+                    _rapidFireLmbGraceStart = DateTime.MinValue; // still held, reset grace
+                }
+                else
+                {
+                    // Appears released — could be our own injection or a real release.
+                    if (_rapidFireLmbGraceStart == DateTime.MinValue)
+                        _rapidFireLmbGraceStart = now;
 
-            _wasRapidFireLeftMouseDown = true;
+                    if ((now - _rapidFireLmbGraceStart).TotalMilliseconds > RapidFireLmbGraceMs)
+                    {
+                        // Released for longer than our injection lasts → genuine release
+                        ResetRapidFireState();
+                        return;
+                    }
+                    // Still within grace window — assume our own LEFTUP, keep going
+                }
+            }
 
             if (now < _nextRapidFireClickUtc)
                 return;
@@ -2038,9 +2101,15 @@ namespace AimmyWPF
             try
             {
                 int delayMs = Math.Clamp(GetSettingInt("Recoil_RapidFireDelayMs", 90), 25, 250);
-                SendMouseInputSafe(MOUSEEVENTF_LEFTDOWN);
-                await Task.Delay(40);
+
+                // Correct semi-auto click sequence:
+                //   1. LEFTUP  — releases the held button (UP→DOWN transition fires the shot)
+                //   2. short delay
+                //   3. LEFTDOWN — re-presses, ready for next cycle; GetAsyncKeyState now reads "held"
                 SendMouseInputSafe(MOUSEEVENTF_LEFTUP);
+                await Task.Delay(20);
+                SendMouseInputSafe(MOUSEEVENTF_LEFTDOWN);
+
                 _nextRapidFireClickUtc = now.AddMilliseconds(delayMs);
             }
             finally
@@ -2136,6 +2205,7 @@ namespace AimmyWPF
 
                 if (closestPrediction == null)
                 {
+                    predictionManager?.Reset();
                     ResetAimMovementState();
                     UpdateHudOverlayState();
                     DetectedPlayerOverlay.DetectedPlayerFocus.Visibility = Visibility.Collapsed;
@@ -2161,8 +2231,6 @@ namespace AimmyWPF
 
                 int unfilteredX = Math.Clamp((int)anchorX, minScreenX, maxScreenX);
                 int unfilteredY = Math.Clamp((int)anchorY, minScreenY, maxScreenY);
-                int detectedX = Math.Clamp((int)(anchorX + XOffset), minScreenX, maxScreenX);
-                int detectedY = Math.Clamp((int)(anchorY + YOffset), minScreenY, maxScreenY);
 
                 double unfilteredLeftDip = 0;
                 double unfilteredTopDip = 0;
@@ -2239,8 +2307,23 @@ namespace AimmyWPF
                 predictionManager.PredictionStrength = Math.Clamp(GetSettingDouble("Aim_PredictionStrength", 1.0), 0.0, 1.0);
                 var predictedPosition = predictionManager.GetEstimatedPosition();
 
-                int predictedAimX = Math.Clamp((int)(predictedPosition.X + XOffset), minScreenX, maxScreenX);
-                int predictedAimY = Math.Clamp((int)(predictedPosition.Y + YOffset), minScreenY, maxScreenY);
+                double maxLeadX = Math.Max(4.0, mappedBoxWidth * 0.45);
+                double maxLeadY = Math.Max(4.0, mappedBoxHeight * 0.35);
+                double leadOffsetX = Math.Clamp(predictedPosition.X - unfilteredX, -maxLeadX, maxLeadX);
+                double leadOffsetY = Math.Clamp(predictedPosition.Y - unfilteredY, -maxLeadY, maxLeadY);
+
+                double leadingAnchorX = Math.Clamp(anchorX + leadOffsetX, minScreenX, maxScreenX);
+                double leadingAnchorY = Math.Clamp(anchorY + leadOffsetY, minScreenY, maxScreenY);
+
+                predictedPosition = new Detection
+                {
+                    X = (int)Math.Round(leadingAnchorX),
+                    Y = (int)Math.Round(leadingAnchorY),
+                    Timestamp = predictedPosition.Timestamp
+                };
+
+                int predictedAimX = Math.Clamp((int)Math.Round(leadingAnchorX + XOffset), minScreenX, maxScreenX);
+                int predictedAimY = Math.Clamp((int)Math.Round(leadingAnchorY + YOffset), minScreenY, maxScreenY);
 
                 bool bindingHeld = IsBindingCurrentlyHeld();
                 bool aimHoldRequired = IsAimHoldRequired();
@@ -2264,14 +2347,15 @@ namespace AimmyWPF
                     else
                     {
                         // DIRECT MODE: Calculate offsets relative to the CAPTURE FRAME CENTER
-                        // This avoids absolute screen coordinates and Cursor.Position entirely
-                        float localCenterX = closestPrediction.Rectangle.X + (closestPrediction.Rectangle.Width / 2.0f);
-                        float localCenterY = closestPrediction.Rectangle.Y + (closestPrediction.Rectangle.Height / 2.0f);
+                        // This avoids absolute screen coordinates and Cursor.Position entirely.
+                        // It also uses the same anchor point logic as trigger/prediction mode.
+                        double localAnchorX = anchorX - physicalDetectionBox.X;
+                        double localAnchorY = anchorY - physicalDetectionBox.Y;
                         float captureCenterX = physicalDetectionBox.Width / 2.0f;
                         float captureCenterY = physicalDetectionBox.Height / 2.0f;
 
-                        aimTargetX = localCenterX - captureCenterX + XOffset;
-                        aimTargetY = localCenterY - captureCenterY + YOffset;
+                        aimTargetX = localAnchorX - captureCenterX + XOffset;
+                        aimTargetY = localAnchorY - captureCenterY + YOffset;
                         
                         MoveCrosshair(aimTargetX, aimTargetY);
                     }
@@ -2295,7 +2379,9 @@ namespace AimmyWPF
                     crosshairY <= mappedBoxY + mappedBoxHeight;
 
                 double triggerThreshold = 10.0; // pixels
-                bool nearAnchor = Math.Abs(crosshairX - anchorX) < triggerThreshold && Math.Abs(crosshairY - anchorY) < triggerThreshold;
+                double triggerAnchorX = toggleState["PredictionToggle"] ? leadingAnchorX : anchorX;
+                double triggerAnchorY = toggleState["PredictionToggle"] ? leadingAnchorY : anchorY;
+                bool nearAnchor = Math.Abs(crosshairX - triggerAnchorX) < triggerThreshold && Math.Abs(crosshairY - triggerAnchorY) < triggerThreshold;
 
                 bool triggerAllowed = allowTrigger && (crosshairInBox || nearAnchor);
                 if ((IsTriggerEnabled() || TriggerOnly) && triggerAllowed)
@@ -3008,7 +3094,7 @@ namespace AimmyWPF
             //AimScroller.Children.Add(Enable_AlwaysOn);
 
             AToggle Enable_AIPredictions = new(this, "Enable Predictions",
-               "This will use a KalmanFilter algorithm to predict aim patterns for better tracing of enemies.");
+               "This tracks box movement direction and leads the aim slightly in front of moving targets for better tracing.");
             Enable_AIPredictions.Reader.Name = "PredictionToggle";
             SetupToggle(Enable_AIPredictions, state => Bools.AIPredictions = state, Bools.AIPredictions);
             AimScroller.Children.Add(Enable_AIPredictions);
@@ -3184,7 +3270,7 @@ namespace AimmyWPF
             AimScroller.Children.Add(XOffset);
 
             ASlider PredictionStrength = new(this, "Prediction Strength", "Strength",
-                "Scales how much of the Kalman lead is applied to the next aim estimate.",
+                "Scales how far ahead moving boxes are led based on their recent motion.",
                 0.01);
 
             PredictionStrength.Slider.Minimum = 0;
@@ -3687,6 +3773,21 @@ namespace AimmyWPF
                 }
             };
             RecoilScroller.Children.Add(ImportPattern);
+
+            ASlider RecoilSoftness = new(this, "Recoil Softness", "Softness",
+                "How smoothly recoil movements are spread out over time. " +
+                "0 = instant / hard (default). Higher values feel more natural but may under-compensate on fast burst fire.",
+                0.05);
+
+            RecoilSoftness.Slider.Minimum = 0.0;
+            RecoilSoftness.Slider.Maximum = 0.95;
+            RecoilSoftness.Slider.Value = GetSettingDouble("Recoil_Softness", 0.0);
+            RecoilSoftness.Slider.TickFrequency = 0.05;
+            RecoilSoftness.Slider.ValueChanged += (s, e) =>
+            {
+                aimmySettings["Recoil_Softness"] = RecoilSoftness.Slider.Value;
+            };
+            RecoilScroller.Children.Add(RecoilSoftness);
 
             ASlider RecoilScale = new(this, "Recoil Strength", "Multiplier",
                 "Scales the X/Y movement values from your pattern. Higher numbers mean stronger compensation.",
