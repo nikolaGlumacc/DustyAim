@@ -27,7 +27,7 @@ namespace Visualization
         private readonly DispatcherTimer _timer;
         private int _lastFrameCount = 0;
         private readonly Queue<string> _logLines = new();
-        private const int MAX_LOG_LINES = 60;
+        private const int MAX_LOG_LINES = 160;
 
         public static DebugOverlay Instance => _instance;
 
@@ -39,6 +39,7 @@ namespace Visualization
             _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             _timer.Tick += Refresh;
             _timer.Start();
+            ReloadLogTail();
         }
 
         public static void AddLog(string msg)
@@ -56,6 +57,7 @@ namespace Visualization
 
         private void Refresh(object sender, EventArgs e)
         {
+            LogPathText.Text = DebugLog.LogFilePath;
             LoopStatus.Text = IsLoopRunning ? "YES" : "NO";
             LoopStatus.Foreground = IsLoopRunning
                 ? System.Windows.Media.Brushes.LightGreen
@@ -76,11 +78,18 @@ namespace Visualization
             CaptureSize.Text = $"{CapW}x{CapH}";
             ScreenSize.Text = $"{PhysW}x{PhysH}";
 
-            // Calculate FPS from frame delta over 250ms
             int frameDelta = TotalFrames - _lastFrameCount;
-            int fps = frameDelta * 4; // 4 ticks per second
+            int fps = frameDelta * 4;
+            FrameDelta.Text = frameDelta.ToString();
             InferenceFPS.Text = fps.ToString();
             _lastFrameCount = TotalFrames;
+
+            bool healthy = IsLoopRunning && fps > 0;
+            HealthBadge.Text = healthy ? "LIVE" : (IsLoopRunning ? "WAITING" : "IDLE");
+            HealthBadge.Foreground = healthy
+                ? System.Windows.Media.Brushes.LightGreen
+                : (IsLoopRunning ? System.Windows.Media.Brushes.Orange : System.Windows.Media.Brushes.LightGray);
+            HealthSummary.Text = $"FPS {fps} | Confidence {LastMaxConf:F3}/{CurrentThreshold:F2} | Capture {CapW}x{CapH}";
         }
 
         private void SaveFrameBtn_Click(object sender, RoutedEventArgs e)
@@ -129,10 +138,27 @@ namespace Visualization
             }
         }
 
+        private void RefreshLogBtn_Click(object sender, RoutedEventArgs e)
+        {
+            ReloadLogTail();
+        }
+
         private void ClearLogBtn_Click(object sender, RoutedEventArgs e)
         {
+            DebugLog.Clear();
             _logLines.Clear();
             LogText.Text = "";
+            AddLog("Log cleared.");
+        }
+
+        private void ReloadLogTail()
+        {
+            _logLines.Clear();
+            foreach (string line in DebugLog.ReadTail(MAX_LOG_LINES))
+                _logLines.Enqueue(line);
+
+            LogText.Text = string.Join("\n", _logLines);
+            LogScroller.ScrollToBottom();
         }
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)

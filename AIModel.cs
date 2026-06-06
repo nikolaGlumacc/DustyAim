@@ -221,19 +221,12 @@ namespace AimmyAimbot
 
         private static Bitmap CaptureToNewBitmap(Rectangle detectionBox)
         {
-            Bitmap bitmap = new Bitmap(detectionBox.Width, detectionBox.Height);
             try
             {
-                using (var g = Graphics.FromImage(bitmap))
-                {
-                    g.CopyFromScreen(detectionBox.Left, detectionBox.Top, 0, 0, detectionBox.Size);
-                }
-
-                return bitmap;
+                return AimAssistC_.ScreenCapture.FastCapture(detectionBox);
             }
             catch
             {
-                bitmap.Dispose();
                 throw;
             }
         }
@@ -373,15 +366,12 @@ namespace AimmyAimbot
 
                     lock (_captureLock)
                     {
-                        if (_screenCaptureBitmap == null) return null;
+                        // Replace old _screenCaptureBitmap with the new fast capture
+                        _screenCaptureBitmap?.Dispose();
+                        _screenCaptureBitmap = AimAssistC_.ScreenCapture.FastCapture(detectionBox);
                         
                         // One-time log to verify capture is working
                         if (_logCounter == 1) Log($"ScreenGrab: First capture successful ({_screenCaptureBitmap.Width}x{_screenCaptureBitmap.Height})");
-
-                        using (var g = Graphics.FromImage(_screenCaptureBitmap))
-                        {
-                            g.CopyFromScreen(detectionBox.Left, detectionBox.Top, 0, 0, detectionBox.Size);
-                        }
 
                         return _screenCaptureBitmap;
                     }
@@ -403,11 +393,23 @@ namespace AimmyAimbot
 
         public static float[] BitmapToFloatArray(Bitmap image, int targetW, int targetH)
         {
-            Bitmap resized;
-            if (image.Width != targetW || image.Height != targetH)
-                resized = new Bitmap(image, new Size(targetW, targetH));
+            Bitmap resized = null;
+
+            bool needNewBitmap = image.PixelFormat != PixelFormat.Format24bppRgb || image.Width != targetW || image.Height != targetH;
+            if (needNewBitmap)
+            {
+                resized = new Bitmap(targetW, targetH, PixelFormat.Format24bppRgb);
+                using (Graphics g = Graphics.FromImage(resized))
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.DrawImage(image, new Rectangle(0, 0, targetW, targetH));
+                }
+            }
             else
+            {
                 resized = image;
+            }
 
             float[] result = new float[3 * targetH * targetW];
             Rectangle rect = new Rectangle(0, 0, targetW, targetH);
@@ -417,16 +419,25 @@ namespace AimmyAimbot
                 bmpData = resized.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
 
                 IntPtr ptr = bmpData.Scan0;
-                int bytes = Math.Abs(bmpData.Stride) * targetH;
+                int stride = Math.Abs(bmpData.Stride);
+                int bytes = stride * targetH;
                 byte[] rgbValues = new byte[bytes];
 
                 Marshal.Copy(ptr, rgbValues, 0, bytes);
-                for (int i = 0; i < rgbValues.Length / 3; i++)
+                int pixelCount = targetW * targetH;
+                // Iterate per-row using stride to correctly skip any row-padding bytes
+                for (int row = 0; row < targetH; row++)
                 {
-                    int index = i * 3;
-                    result[i] = rgbValues[index + 2] / 255.0f; // R
-                    result[targetW * targetH + i] = rgbValues[index + 1] / 255.0f; // G
-                    result[2 * targetW * targetH + i] = rgbValues[index] / 255.0f; // B
+                    int rowBase = row * stride;
+                    int rowOffset = row * targetW;
+                    for (int col = 0; col < targetW; col++)
+                    {
+                        int srcIndex = rowBase + col * 3;
+                        int dstIndex = rowOffset + col;
+                        result[dstIndex] = rgbValues[srcIndex + 2] / 255.0f;             // R
+                        result[pixelCount + dstIndex] = rgbValues[srcIndex + 1] / 255.0f; // G
+                        result[2 * pixelCount + dstIndex] = rgbValues[srcIndex] / 255.0f; // B
+                    }
                 }
             }
             finally
@@ -434,7 +445,7 @@ namespace AimmyAimbot
                 if (bmpData != null)
                     resized.UnlockBits(bmpData);
 
-                if (resized != image)
+                if (resized != image && resized != null)
                     resized.Dispose();
             }
 
@@ -631,10 +642,12 @@ namespace AimmyAimbot
                     float localMaxX = Math.Max(1f, physicalDetectionBox.Width);
                     float localMaxY = Math.Max(1f, physicalDetectionBox.Height);
 
-                    var tree = new KdTree<float, Prediction>(2, new FloatMath());
-                    object treeLock = new object();
+                    var tree = new KdTree.KdTree<float, Prediction>(2, new KdTree.Math.FloatMath());
+                    var treeLock = new object();
+                    var maxConfLock = new object();
                     float maxConfSeen = 0f;
-                    object maxConfLock = new object();
+                    
+                    var allPredictions = new System.Collections.Concurrent.ConcurrentBag<Prediction>();
 
                     Parallel.For(0, runtimeNumAnchors, i =>
                     {
@@ -772,11 +785,49 @@ namespace AimmyAimbot
                             Confidence = confidence
                         };
 
-                        lock (treeLock)
-                        {
-                            tree.Add(new[] { captureCenterX, captureCenterY }, prediction);
-                        }
+                        allPredictions.Add(prediction);
                     });
+
+                    // --- NMS (Non-Maximum Suppression) ---
+                    float nmsThreshold = 0.45f;
+                    var sortedPreds = allPredictions.OrderByDescending(p => p.Confidence).ToList();
+                    var selectedPreds = new List<Prediction>();
+
+                    foreach (var current in sortedPreds)
+                    {
+                        bool suppress = false;
+                        foreach (var previous in selectedPreds)
+                        {
+                            // Calculate IoU
+                            float xA = Math.Max(current.Rectangle.Left, previous.Rectangle.Left);
+                            float yA = Math.Max(current.Rectangle.Top, previous.Rectangle.Top);
+                            float xB = Math.Min(current.Rectangle.Right, previous.Rectangle.Right);
+                            float yB = Math.Min(current.Rectangle.Bottom, previous.Rectangle.Bottom);
+
+                            float interArea = Math.Max(0, xB - xA) * Math.Max(0, yB - yA);
+                            if (interArea > 0)
+                            {
+                                float boxAArea = current.Rectangle.Width * current.Rectangle.Height;
+                                float boxBArea = previous.Rectangle.Width * previous.Rectangle.Height;
+                                float iou = interArea / (boxAArea + boxBArea - interArea);
+
+                                if (iou > nmsThreshold)
+                                {
+                                    suppress = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!suppress)
+                        {
+                            selectedPreds.Add(current);
+                            float captureCenterX = current.Rectangle.Left + current.Rectangle.Width / 2f;
+                            float captureCenterY = current.Rectangle.Top + current.Rectangle.Height / 2f;
+                            tree.Add(new[] { captureCenterX, captureCenterY }, current);
+                        }
+                    }
+                    // ------------------------------------
 
                     if (_logCounter % 30 == 0)
                         Log($"Frame stats: MaxConf={maxConfSeen:F3} Threshold={ConfidenceThreshold:F2} Anchors={runtimeNumAnchors} V8Style={runtimeIsV8Style}");

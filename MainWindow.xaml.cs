@@ -15,6 +15,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.IO.Ports;
@@ -55,6 +56,7 @@ namespace AimmyWPF
         private DateTime _lastAimTargetUpdateUtc = DateTime.MinValue;
         private DateTime _lastAimTargetSeenUtc = DateTime.MinValue;
         private bool _isApplyingAimStylePreset = false;
+        private bool _isApplyingAimTargetAreaPreset = false;
         private readonly object _recoilPatternLock = new();
         private List<RecoilPatternStep> _recoilPatternSteps = new();
         private string _loadedRecoilPatternPath = string.Empty;
@@ -163,9 +165,36 @@ namespace AimmyWPF
                 };
 
                 foreach (string path in possiblePaths)
+                {
+                    if (!Directory.Exists(path) && path.Contains("bin"))
+                    {
+                        try { Directory.CreateDirectory(path); } catch { }
+                    }
                     if (Directory.Exists(path)) return path;
-
+                }
+                
                 return possiblePaths[1]; // Default to next to exe
+            }
+        }
+
+        private string ModelFolderPath
+        {
+            get
+            {
+                string explicitPath = @"C:\Users\nikol\OneDrive\Desktop\aimbot C#\models";
+                if (Directory.Exists(explicitPath))
+                    return explicitPath;
+
+                string fallbackPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "models");
+                if (!Directory.Exists(fallbackPath))
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(fallbackPath);
+                    }
+                    catch { }
+                }
+                return fallbackPath;
             }
         }
 
@@ -182,6 +211,7 @@ namespace AimmyWPF
             { "Y_Offset", 0 },
             { "X_Offset", 0 },
             { "Aim_HeadRatio", 0.15 },
+            { "Aim_TargetArea", "Head" },
             { "Aim_PredictionStrength", 1.0 },
             { "Aim_BoxFormat", "auto" },
             { "Trigger_Delay", 0.1 },
@@ -343,7 +373,15 @@ namespace AimmyWPF
                 ? (1.0 / 120.0)
                 : Math.Clamp((now - _lastAimTargetUpdateUtc).TotalSeconds, 1.0 / 240.0, 0.05);
 
+            double targetDistance = Math.Sqrt((rawDeltaX * rawDeltaX) + (rawDeltaY * rawDeltaY));
             double smoothness = Math.Clamp(GetSettingDouble("Aim_Smoothness", 0.78), 0.05, 0.98);
+
+            // Dynamic Aim Friction: Slow down crosshair as it gets very close to target center
+            if (targetDistance < 50.0)
+            {
+                double frictionMultiplier = 1.0 - (targetDistance / 50.0); // 0.0 at 50px, 1.0 at 0px
+                smoothness = Math.Clamp(smoothness + (0.97 - smoothness) * Math.Pow(frictionMultiplier, 1.5), 0.05, 0.98);
+            }
             double jumpX = rawDeltaX - _smoothedAimX;
             double jumpY = rawDeltaY - _smoothedAimY;
             double jumpDistance = Math.Sqrt((jumpX * jumpX) + (jumpY * jumpY));
@@ -411,6 +449,58 @@ namespace AimmyWPF
                 return;
 
             aimmySettings["Aim_StylePreset"] = "Custom";
+        }
+
+        private enum AimTargetArea
+        {
+            Head,
+            Neck,
+            Chest,
+            Custom
+        }
+
+        private static AimTargetArea ParseAimTargetArea(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return AimTargetArea.Head;
+
+            return value.Trim().ToLowerInvariant() switch
+            {
+                "head" => AimTargetArea.Head,
+                "neck" => AimTargetArea.Neck,
+                "chest" => AimTargetArea.Chest,
+                "custom" => AimTargetArea.Custom,
+                _ => AimTargetArea.Head,
+            };
+        }
+
+        private static double GetPresetAimTargetRatio(AimTargetArea area)
+        {
+            return area switch
+            {
+                AimTargetArea.Head => 0.15,
+                AimTargetArea.Neck => 0.28,
+                AimTargetArea.Chest => 0.45,
+                AimTargetArea.Custom => 0.15,
+                _ => 0.15,
+            };
+        }
+
+        private double GetCurrentAimTargetRatio()
+        {
+            var area = ParseAimTargetArea(GetSettingString("Aim_TargetArea", "Head"));
+            if (area == AimTargetArea.Custom)
+                return Math.Clamp(GetSettingDouble("Aim_HeadRatio", 0.15), 0.0, 1.0);
+
+            return GetPresetAimTargetRatio(area);
+        }
+
+        private void MarkAimTargetAreaAsCustomIfNeeded()
+        {
+            if (_isApplyingAimStylePreset || _isApplyingAimTargetAreaPreset)
+                return;
+
+            aimmySettings["Aim_TargetArea"] = "Custom";
         }
 
         private void SyncAimSettingsWithPresetIfSelected()
@@ -920,12 +1010,92 @@ namespace AimmyWPF
             return outerBorder;
         }
 
+        private FrameworkElement CreateAimTargetAreaSelector(ASlider aimTargetZone)
+        {
+            Border outerBorder = new()
+            {
+                BorderBrush = (Brush)brushcolor.ConvertFromString("#334B5C"),
+                BorderThickness = new Thickness(1),
+                Background = (Brush)brushcolor.ConvertFromString("#101821"),
+                CornerRadius = new CornerRadius(10),
+                Margin = new Thickness(13, 0, 13, 12),
+                Padding = new Thickness(12)
+            };
+
+            StackPanel stack = new()
+            {
+                Orientation = Orientation.Vertical
+            };
+
+            TextBlock title = new()
+            {
+                Text = "Aim Target Area",
+                Foreground = Brushes.White,
+                FontFamily = new FontFamily("Atkinson Hyperlegible"),
+                FontSize = 12,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+
+            ComboBox comboBox = new()
+            {
+                Width = 160,
+                ItemsSource = new[] { "Head", "Neck", "Chest", "Custom" },
+                SelectedValue = GetSettingString("Aim_TargetArea", "Head"),
+                Margin = new Thickness(0, 0, 0, 8),
+                Foreground = Brushes.White,
+                Background = (Brush)brushcolor.ConvertFromString("#FF111A24"),
+                BorderBrush = (Brush)brushcolor.ConvertFromString("#334B5C"),
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+
+            comboBox.SelectionChanged += (s, e) =>
+            {
+                if (comboBox.SelectedItem == null)
+                    return;
+
+                string selectedValue = comboBox.SelectedItem.ToString();
+                aimmySettings["Aim_TargetArea"] = selectedValue;
+
+                if (!selectedValue.Equals("Custom", StringComparison.OrdinalIgnoreCase))
+                {
+                    _isApplyingAimTargetAreaPreset = true;
+                    try
+                    {
+                        double presetRatio = GetPresetAimTargetRatio(ParseAimTargetArea(selectedValue));
+                        aimmySettings["Aim_HeadRatio"] = presetRatio;
+                        aimTargetZone.Slider.Value = presetRatio * 100.0;
+                    }
+                    finally
+                    {
+                        _isApplyingAimTargetAreaPreset = false;
+                    }
+                }
+
+                UpdateAimTargetZonePreview();
+            };
+
+            TextBlock info = new()
+            {
+                Text = "Select a preset hit area. Manual slider changes will switch to Custom.",
+                Foreground = Brushes.LightGray,
+                FontFamily = new FontFamily("Atkinson Hyperlegible"),
+                FontSize = 10,
+                TextWrapping = TextWrapping.Wrap
+            };
+
+            stack.Children.Add(title);
+            stack.Children.Add(comboBox);
+            stack.Children.Add(info);
+            outerBorder.Child = stack;
+            return outerBorder;
+        }
+
         private void UpdateAimTargetZonePreview()
         {
             if (_aimTargetZonePreviewLine == null || _aimTargetZonePreviewMarker == null || _aimTargetZonePreviewText == null)
                 return;
 
-            double ratio = Math.Clamp(GetSettingDouble("Aim_HeadRatio", 0.15), 0.0, 1.0);
+            double ratio = GetCurrentAimTargetRatio();
             double targetY = Math.Clamp(ratio * AimTargetPreviewBoxHeight, 0.0, AimTargetPreviewBoxHeight);
             double lineTop = Math.Clamp(targetY - (_aimTargetZonePreviewLine.Height / 2.0), 0.0, AimTargetPreviewBoxHeight - _aimTargetZonePreviewLine.Height);
             double markerLeft = (AimTargetPreviewBoxWidth / 2.0) - (_aimTargetZonePreviewMarker.Width / 2.0);
@@ -935,7 +1105,9 @@ namespace AimmyWPF
             Canvas.SetTop(_aimTargetZonePreviewLine, lineTop);
             Canvas.SetLeft(_aimTargetZonePreviewMarker, markerLeft);
             Canvas.SetTop(_aimTargetZonePreviewMarker, markerTop);
-            _aimTargetZonePreviewText.Text = $"Live aim point preview: {Math.Round(ratio * 100.0)}% from the top of the detected box.";
+
+            string areaName = ParseAimTargetArea(GetSettingString("Aim_TargetArea", "Head")).ToString();
+            _aimTargetZonePreviewText.Text = $"Live aim point preview: {Math.Round(ratio * 100.0)}% from the top of the detected box.\nSelected area: {areaName}";
         }
 
         // PDW == PlayerDetectionWindow
@@ -982,37 +1154,25 @@ namespace AimmyWPF
                 //Process.Start("https://aka.ms/vs/17/release/vc_redist.x64.exe");
                 //Application.Current.Shutdown();
             }
-
             // Check for required folders
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            string[] dirs = { "bin", "bin/models", "bin/images", "bin/configs", "bin/recoil" };
-
             try
             {
-                foreach (string dir in dirs)
+                // Ensure required folders exist
+                string[] dirs = { "bin", "bin/images", "bin/configs", "bin/recoil" };
+                foreach (var dir in dirs)
                 {
                     string fullPath = Path.Combine(baseDir, dir);
                     if (!Directory.Exists(fullPath))
-                    {
-                        // Create the directory
                         Directory.CreateDirectory(fullPath);
-                    }
                 }
-                try
-                {
-                    DpiScale dpi = VisualTreeHelper.GetDpi(this);
-                    AIModel.DpiScaleX = dpi.DpiScaleX;
-                    AIModel.DpiScaleY = dpi.DpiScaleY;
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Error initializing AI model: {ex.Message}", "Model Initialization Error");
-                    Application.Current.Shutdown();
-                }
+
+                DpiScale dpi = VisualTreeHelper.GetDpi(this);
+                AIModel.DpiScaleX = dpi.DpiScaleX;
+                AIModel.DpiScaleY = dpi.DpiScaleY;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                MessageBox.Show($"Error creating a required directory: {ex}");
                 Application.Current.Shutdown(); // We don't want to continue running without that folder.
             }
 
@@ -1147,10 +1307,29 @@ namespace AimmyWPF
         private readonly List<DownloadItem> AvailableModels = new();
         private readonly List<DownloadItem> AvailableConfigs = new();
 
-        private static readonly (string Owner, string Repo, string Branch)[] DownloadSources = new[]
+        private readonly (string Owner, string Repo, string Branch, string Path, string SourceName)[] DownloadSources = new[]
         {
-            ("Babyhamsta", "Aimmy", "Aimmy-V1"),
-            ("whoswhip", "aimmy-models", "main")
+            ("Babyhamsta", "Aimmy", "Aimmy-V1", "models", "Aimmy Official"),
+            ("whoswhip", "aimmy-models", "main", "models", "Community Models"),
+            ("ai-aimbot", "AIMr", "main", "models", "AIMr Official"),
+            ("SunOner", "sunone_aimbot", "main", "models", "Sunone Public Models")
+        };
+
+        private static readonly Dictionary<string, (string ModelType, int? DatasetImages)> KnownModelMetadata = new(StringComparer.OrdinalIgnoreCase)
+        {
+            { "yolov8n.onnx", ("YOLOv8n", null) },
+            { "yolov8s.onnx", ("YOLOv8s", null) },
+            { "yolov8m.onnx", ("YOLOv8m", null) },
+            { "yolov8l.onnx", ("YOLOv8l", null) },
+            { "yolov8x.onnx", ("YOLOv8x", null) },
+            { "yolov5s.onnx", ("YOLOv5s", null) },
+            { "yolov5m.onnx", ("YOLOv5m", null) },
+            { "yolov5l.onnx", ("YOLOv5l", null) },
+            { "yolov5x.onnx", ("YOLOv5x", null) },
+            { "yolov6s.onnx", ("YOLOv6s", null) },
+            { "yolov7.onnx", ("YOLOv7", null) },
+            { "yolov8.onnx", ("YOLOv8", null) },
+            { "yolo.onnx", ("YOLO", null) }
         };
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -1170,9 +1349,9 @@ namespace AimmyWPF
                     if (session?.ToggleState != null)
                         ApplyToggleSnapshot(session.ToggleState);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log($"Toggle restore failed: {ex.Message}");
+                    Log("Toggle restore failed.");
                 }
             }
 
@@ -1195,26 +1374,34 @@ namespace AimmyWPF
             var tasks = new List<Task>();
             foreach (var source in DownloadSources)
             {
-                tasks.Add(RetrieveAndAddFilesAsync(source.Owner, source.Repo, source.Branch, "models", AvailableModels));
-                tasks.Add(RetrieveAndAddFilesAsync(source.Owner, source.Repo, source.Branch, "configs", AvailableConfigs));
+                tasks.Add(RetrieveAndAddFilesAsync(source.Owner, source.Repo, source.Branch, source.Path, source.SourceName, AvailableModels));
+                tasks.Add(RetrieveAndAddFilesAsync(source.Owner, source.Repo, source.Branch, "configs", source.SourceName, AvailableConfigs));
             }
             await Task.WhenAll(tasks);
         }
 
-        private async Task RetrieveAndAddFilesAsync(string owner, string repo, string branch, string repositoryPath, List<DownloadItem> availableFiles)
+        private async Task RetrieveAndAddFilesAsync(string owner, string repo, string branch, string repositoryPath, string sourceName, List<DownloadItem> availableFiles)
         {
             IEnumerable<DownloadItem> results = await RetrieveGithubFiles.ListContents(owner, repo, repositoryPath, branch);
 
             foreach (var file in results)
             {
-                if (availableFiles.Any(existing => existing.SourceKey == file.SourceKey))
+                var enrichedFile = file with
+                {
+                    SourceName = sourceName,
+                    RepoUrl = $"https://github.com/{owner}/{repo}",
+                    ModelType = GuessModelType(file.Name),
+                    DatasetImages = GuessDatasetImages(file.Name)
+                };
+
+                if (availableFiles.Any(existing => existing.SourceKey == enrichedFile.SourceKey))
                     continue;
 
                 string localPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", repositoryPath, file.Name);
                 if (File.Exists(localPath))
                     continue;
 
-                availableFiles.Add(file);
+                availableFiles.Add(enrichedFile);
             }
         }
 
@@ -1401,7 +1588,7 @@ namespace AimmyWPF
             }
 
             double alpha = Math.Clamp(GetSettingDouble("Mouse_Sens", 0.80), 0.01, 0.99);
-            double baseMoveFactor = Math.Clamp(1.0 - alpha, 0.02, 0.85);
+            double baseMoveFactor = Math.Clamp(alpha, 0.02, 0.85);
             double distanceFactor = Lerp(0.55, 1.0, Math.Clamp(distance / 180.0, 0.0, 1.0));
 
             double moveX = targetX * baseMoveFactor * distanceFactor;
@@ -2246,8 +2433,8 @@ namespace AimmyWPF
                 float mappedBoxHeight = Math.Max(1f, closestPrediction.Rectangle.Height);
 
                 float anchorX = mappedBoxX + (mappedBoxWidth / 2.0f);
-                float headRatio = (float)Math.Clamp(GetSettingDouble("Aim_HeadRatio", 0.15), 0.0, 1.0);
-                float anchorY = mappedBoxY + (mappedBoxHeight * headRatio);
+                float aimRatio = (float)Math.Clamp(GetCurrentAimTargetRatio(), 0.0, 1.0);
+                float anchorY = mappedBoxY + (mappedBoxHeight * aimRatio);
 
                 int unfilteredX = Math.Clamp((int)anchorX, minScreenX, maxScreenX);
                 int unfilteredY = Math.Clamp((int)anchorY, minScreenY, maxScreenY);
@@ -3906,7 +4093,7 @@ namespace AimmyWPF
         private void InitializeFileWatcher()
         {
             fileWatcher = new FileSystemWatcher();
-            fileWatcher.Path = "bin/models";
+            fileWatcher.Path = ModelFolderPath;
             fileWatcher.Filter = "*.onnx";
             fileWatcher.EnableRaisingEvents = true;
             fileWatcher.Created += FileWatcher_Reload;
@@ -3944,7 +4131,7 @@ namespace AimmyWPF
                 AIModel newModel = null;
                 try
                 {
-                    string modelPath = Path.Combine("bin/models", selectedModel);
+                    string modelPath = Path.Combine(ModelFolderPath, selectedModel);
                     newModel = new AIModel(modelPath)
                     {
                         ConfidenceThreshold = (float)(GetSettingDouble("AI_Min_Conf", 5.0) / 100.0),
@@ -3995,9 +4182,14 @@ namespace AimmyWPF
 
         private void LoadModelsIntoListBox()
         {
-            string[] onnxFiles = Directory.Exists("bin/models")
-                ? Directory.GetFiles("bin/models", "*.onnx")
+            Log($"Loading models from: {ModelFolderPath}");
+            var onnxFiles = Directory.Exists(ModelFolderPath)
+                ? Directory.GetFiles(ModelFolderPath, "*.onnx")
                 : Array.Empty<string>();
+            var ptFiles = Directory.Exists(ModelFolderPath)
+                ? Directory.GetFiles(ModelFolderPath, "*.pt")
+                : Array.Empty<string>();
+            string[] modelFiles = onnxFiles.Concat(ptFiles).ToArray();
             string desiredSelection = SelectorListBox.SelectedItem?.ToString();
             if (string.IsNullOrWhiteSpace(desiredSelection))
                 desiredSelection = lastLoadedModel;
@@ -4303,11 +4495,68 @@ namespace AimmyWPF
 
         private void LoadStoreMenu()
         {
-            DownloadGateway(ModelStoreScroller, AvailableModels, LackOfModelsText);
-            DownloadGateway(ConfigStoreScroller, AvailableConfigs, LackOfConfigsText);
+            SortAvailableModels();
+            DownloadGateway(ModelStoreScroller, AvailableModels, LackOfModelsText, ModelFolderPath);
+            DownloadGateway(ConfigStoreScroller, AvailableConfigs, LackOfConfigsText, "bin/configs");
         }
 
-        private void DownloadGateway(StackPanel scroller, IReadOnlyList<DownloadItem> entries, Label lackOfLabel)
+        private void SortAvailableModels()
+        {
+            AvailableModels.Sort((a, b) =>
+            {
+                int datasetCompare = Nullable.Compare(b.DatasetImages, a.DatasetImages);
+                if (datasetCompare != 0)
+                    return datasetCompare;
+
+                int typeCompare = string.Compare(a.ModelType, b.ModelType, StringComparison.OrdinalIgnoreCase);
+                if (typeCompare != 0)
+                    return typeCompare;
+
+                int sourceCompare = string.Compare(a.SourceName, b.SourceName, StringComparison.OrdinalIgnoreCase);
+                if (sourceCompare != 0)
+                    return sourceCompare;
+
+                return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            });
+        }
+
+        private static string GuessModelType(string fileName)
+        {
+            string normalized = fileName.ToLowerInvariant();
+            if (KnownModelMetadata.TryGetValue(fileName, out var knownMeta))
+                return knownMeta.ModelType;
+
+            if (normalized.Contains("yolov8")) return "YOLOv8";
+            if (normalized.Contains("yolov7")) return "YOLOv7";
+            if (normalized.Contains("yolov6")) return "YOLOv6";
+            if (normalized.Contains("yolov5")) return "YOLOv5";
+            if (normalized.Contains("yolov4")) return "YOLOv4";
+            if (normalized.Contains("yolo") && normalized.Contains("v"))
+                return Regex.Match(normalized, @"yolo[v-]?\d").Value.ToUpperInvariant();
+            if (normalized.Contains("yolo")) return "YOLO";
+            if (normalized.Contains("onnx")) return "ONNX";
+            return "Unknown";
+        }
+
+        private static int? GuessDatasetImages(string fileName)
+        {
+            string normalized = fileName.ToLowerInvariant();
+            var match = Regex.Match(normalized, @"(\d{1,6})(k|m)?(\b|_)");
+            if (!match.Success)
+                return null;
+
+            if (!int.TryParse(match.Groups[1].Value, out int amount))
+                return null;
+
+            string suffix = match.Groups[2].Value;
+            if (suffix == "k")
+                return amount * 1000;
+            if (suffix == "m")
+                return amount * 1000000;
+            return amount;
+        }
+
+        private void DownloadGateway(StackPanel scroller, IReadOnlyList<DownloadItem> entries, Label lackOfLabel, string targetDir)
         {
             scroller.Children.Clear();
             if (entries.Count == 0)
@@ -4319,7 +4568,7 @@ namespace AimmyWPF
             lackOfLabel.Visibility = Visibility.Collapsed;
             foreach (var entry in entries)
             {
-                scroller.Children.Add(new ADownloadGateway(entry));
+                scroller.Children.Add(new ADownloadGateway(entry, targetDir));
             }
         }
 
@@ -4375,10 +4624,12 @@ namespace AimmyWPF
             AimTargetZone.Slider.ValueChanged += (s, x) =>
             {
                 aimmySettings["Aim_HeadRatio"] = AimTargetZone.Slider.Value / 100.0;
+                MarkAimTargetAreaAsCustomIfNeeded();
                 MarkAimStyleAsCustomIfNeeded();
                 UpdateAimTargetZonePreview();
             };
             SettingsScroller.Children.Add(AimTargetZone);
+            SettingsScroller.Children.Add(CreateAimTargetAreaSelector(AimTargetZone));
             SettingsScroller.Children.Add(CreateAimTargetZonePreview());
 
             bool topMostInitialState = toggleState.ContainsKey("TopMost") ? toggleState["TopMost"] : false;

@@ -1,0 +1,34 @@
+<UserControl x:Class="AimmyWPF.UserController.RecoilPatternDesigner"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignHeight="220"
+             d:DesignWidth="520"
+             Height="220"
+             HorizontalAlignment="Stretch">
+    <Border Background="#FF11161A"
+            BorderBrush="#FF263039"
+            BorderThickness="1"
+            CornerRadius="6"
+            Margin="0,8,0,0"
+            Padding="8">
+        <Grid>
+            <Canvas x:Name="DrawCanvas"
+                    Background="#FF080B0D"
+                    ClipToBounds="True"
+                    MouseLeftButtonDown="DrawCanvas_MouseLeftButtonDown"
+                    MouseLeftButtonUp="DrawCanvas_MouseLeftButtonUp"
+                    MouseMove="DrawCanvas_MouseMove" />
+            <TextBlock x:Name="EmptyStateText"
+                       Text="Draw a recoil path"
+                       Foreground="#88FFFFFF"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       FontFamily="Atkinson Hyperlegible"
+                       FontSize="12"
+                       IsHitTestVisible="False" />
+        </Grid>
+    </Border>
+</UserControl>

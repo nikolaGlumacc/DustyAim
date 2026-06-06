@@ -250,7 +250,8 @@
                                            Content="There is no downloadable models at the moment, please check again later."
                                            Foreground="#DDFFFFFF" />
                                     <ScrollViewer x:Name="ModelStoreMenu"
-                                                  VerticalScrollBarVisibility="Hidden"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  CanContentScroll="True"
                                                   PanningMode="VerticalOnly">
                                         <StackPanel x:Name="ModelStoreScroller" />
                                     </ScrollViewer>
@@ -272,7 +273,8 @@
                                            Content="There is no downloadable configs at the moment, please check again later."
                                            Foreground="#DDFFFFFF" />
                                     <ScrollViewer x:Name="ConfigStoreMenu"
-                                                  VerticalScrollBarVisibility="Hidden"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  CanContentScroll="True"
                                                   PanningMode="VerticalOnly">
                                         <StackPanel x:Name="ConfigStoreScroller" />
                                     </ScrollViewer>

@@ -14,6 +14,7 @@ namespace AimmyWPF.UserController
         {
             InitializeComponent();
             Title.Content = Text;
+            MainWin = MW;
 
             Slider.ValueChanged += (s, e) =>
             {
@@ -33,8 +34,6 @@ namespace AimmyWPF.UserController
             {
                 MainWin.ActivateMoreInfo(Info);
             };
-
-            MainWin = MW;
         }
     }
 }

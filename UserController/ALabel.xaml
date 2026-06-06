@@ -6,15 +6,16 @@
              xmlns:local="clr-namespace:AimmyWPF.UserController"
              mc:Ignorable="d"
              d:DesignWidth="532"
-             Height="36">
+             Height="30">
     <Grid>
         <Label x:Name="Title"
-               Foreground="White"
+               Foreground="#9EB7C5"
                Content="Aim Aligner"
                FontFamily="/AimmyWPF;component/Fonts/#Atkinson Hyperlegible"
                VerticalContentAlignment="Center"
-               Padding="10,0,0,0"
-               FontSize="13"
-               Margin="0,0,47,10" />
+               Padding="12,0,0,0"
+               FontSize="11"
+               FontWeight="SemiBold"
+               Margin="0,0,47,6" />
     </Grid>
 </UserControl>

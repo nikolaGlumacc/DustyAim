@@ -1,4 +1,4 @@
-﻿using Class;
+using Class;
 using SecondaryWindows;
 using System;
 using System.IO;
@@ -12,12 +12,15 @@ namespace AimmyWPF.UserController
     {
         private static readonly HttpClient _httpClient = new HttpClient();
         private readonly DownloadItem _downloadItem;
+        private readonly string _localDirectory;
 
-        public ADownloadGateway(DownloadItem downloadItem)
+        public ADownloadGateway(DownloadItem downloadItem, string localDirectory)
         {
             InitializeComponent();
             _downloadItem = downloadItem;
+            _localDirectory = localDirectory;
             Title.Content = downloadItem.DisplayTitle;
+            Subtitle.Text = downloadItem.MetadataLine;
 
             DownloadButton.Click += async (s, e) =>
             {
@@ -34,13 +37,10 @@ namespace AimmyWPF.UserController
                         string escapedFileName = Uri.EscapeDataString(_downloadItem.Name);
                         string url = $"https://github.com/{_downloadItem.Owner}/{_downloadItem.Repo}/raw/{branch}/{remoteSegment}{escapedFileName}";
 
-                        string localDirectory = string.IsNullOrWhiteSpace(_downloadItem.RemotePath)
-                            ? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin")
-                            : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", _downloadItem.RemotePath);
-                        if (!Directory.Exists(localDirectory))
-                            Directory.CreateDirectory(localDirectory);
+                        if (!Directory.Exists(_localDirectory))
+                            Directory.CreateDirectory(_localDirectory);
 
-                        string localPath = Path.Combine(localDirectory, _downloadItem.Name);
+                        string localPath = Path.Combine(_localDirectory, _downloadItem.Name);
 
                         using (var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
                         {

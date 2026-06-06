@@ -6,9 +6,9 @@
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:local="clr-namespace:AimmyWPF.UserController"
              mc:Ignorable="d"
-             d:DesignHeight="50"
+             d:DesignHeight="46"
              d:DesignWidth="532"
-             Height="50">
+             Height="46">
     <UserControl.Resources>
         <Storyboard x:Key="EnableSwitch">
             <ColorAnimationUsingKeyFrames Storyboard.TargetProperty="(Panel.Background).(GradientBrush.GradientStops)[0].(GradientStop.Color)" Storyboard.TargetName="border">
@@ -78,19 +78,19 @@
         </Storyboard>
     </UserControl.Resources>
     <Grid>
-        <Border Background="#FF191919"
-                BorderBrush="#FF1E1E1E"
-                BorderThickness="2"
-                CornerRadius="5"
-                Margin="0,0,0,10">
+        <Border Background="#FF11161A"
+                BorderBrush="#FF263039"
+                BorderThickness="1"
+                CornerRadius="6"
+                Margin="0,0,0,8">
             <Grid>
                 <Label x:Name="Title"
-                       Foreground="White"
+                       Foreground="#F4FFFFFF"
                        Content="Enable AI Aim Aligner"
                        FontFamily="/AimmyWPF;component/Fonts/#Atkinson Hyperlegible"
                        VerticalContentAlignment="Center"
-                       Padding="10,0,0,0"
-                       FontSize="13"
+                       Padding="12,0,0,0"
+                       FontSize="12"
                        Margin="0,0,47,0" />
                 <Border x:Name="border1"
                         HorizontalAlignment="Right"
@@ -167,10 +167,10 @@
                         FontFamily="Segoe MDL2 Assets"
                         BorderThickness="0,0,0,0"
                         BorderBrush="{x:Null}"
-                        Background="#FF323232"
+                        Background="#FF1D2830"
                         FontSize="10"
                         materialDesign:ButtonAssist.CornerRadius="5"
-                        Foreground="White" />
+                        Foreground="#CDE3EC" />
             </Grid>
         </Border>
     </Grid>

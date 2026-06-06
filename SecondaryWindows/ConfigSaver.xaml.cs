@@ -11,10 +11,11 @@ namespace SecondaryWindows
     /// <summary>
     /// Interaction logic for ConfigSaver.xaml
     /// </summary>
-        public partial class ConfigSaver : Window
-        {
-            public Dictionary<string, dynamic> aimmySettings = new Dictionary<string, dynamic>();
-            public Dictionary<string, bool> toggleState = new Dictionary<string, bool>();
+    public partial class ConfigSaver : Window
+    {
+        public Dictionary<string, dynamic> aimmySettings = new Dictionary<string, dynamic>();
+        public Dictionary<string, bool> toggleState = new Dictionary<string, bool>();
+        private static readonly string ConfigDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "configs");
 
         private string ExtraStrings = string.Empty;
 
@@ -32,8 +33,12 @@ namespace SecondaryWindows
 
         private void WriteJSON()
         {
+            if (!TryGetConfigName(out string configName))
+                return;
+
             try
             {
+                Directory.CreateDirectory(ConfigDirectory);
                 var extendedSettings = new Dictionary<string, object>();
                 foreach (var kvp in aimmySettings)
                 {
@@ -51,10 +56,10 @@ namespace SecondaryWindows
                 extendedSettings["ToggleState"] = toggleState;
 
                 // Add topmost
-                extendedSettings["TopMost"] = this.Topmost ? true : false;
+                extendedSettings["TopMost"] = toggleState.TryGetValue("TopMost", out bool topMostState) && topMostState;
 
                 string json = JsonConvert.SerializeObject(extendedSettings, Formatting.Indented);
-                File.WriteAllText($"bin/configs/{ConfigNameTextbox.Text}.json", json);
+                File.WriteAllText(Path.Combine(ConfigDirectory, $"{configName}.json"), json);
             }
             catch (Exception x)
             {
@@ -68,7 +73,11 @@ namespace SecondaryWindows
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
-            if (File.Exists($"bin/configs/{ConfigNameTextbox.Text}.json"))
+            if (!TryGetConfigName(out string configName))
+                return;
+
+            string targetPath = Path.Combine(ConfigDirectory, $"{configName}.json");
+            if (File.Exists(targetPath))
             {
                 if (MessageBox.Show("A config already exists with the same name, would you like to overwrite it?",
                     "Aimmy - Configuration Saver", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
@@ -76,6 +85,24 @@ namespace SecondaryWindows
             }
             else
                 WriteJSON();
+        }
+
+        private bool TryGetConfigName(out string configName)
+        {
+            configName = ConfigNameTextbox.Text?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(configName))
+            {
+                MessageBox.Show("Please enter a config name before saving.", "Aimmy - Configuration Saver");
+                return false;
+            }
+
+            if (configName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                MessageBox.Show("Config name contains invalid filename characters.", "Aimmy - Configuration Saver");
+                return false;
+            }
+
+            return true;
         }
 
         private void DownloadableModelCheckBox_Checked(object sender, RoutedEventArgs e)

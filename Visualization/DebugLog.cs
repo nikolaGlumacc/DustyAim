@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace Visualization
 {
@@ -12,7 +14,8 @@ namespace Visualization
         private static int _pendingCount = 0;
         private static bool _hasPending = false;
 
-        public static string LogFilePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dusty_debug.log");
+        public static string LogDirectory => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs");
+        public static string LogFilePath => Path.Combine(LogDirectory, "dusty_debug.log");
 
         public static void Write(string message)
         {
@@ -66,6 +69,7 @@ namespace Visualization
 
             try
             {
+                Directory.CreateDirectory(LogDirectory);
                 File.AppendAllText(LogFilePath, BuildLine(_pendingTimestamp, _pendingMessage, _pendingCount) + Environment.NewLine);
             }
             catch
@@ -102,6 +106,44 @@ namespace Visualization
                 return message.Substring(0, colonIndex).TrimEnd();
 
             return message;
+        }
+
+        public static IReadOnlyList<string> ReadTail(int maxLines)
+        {
+            Flush();
+
+            if (maxLines <= 0 || !File.Exists(LogFilePath))
+                return Array.Empty<string>();
+
+            try
+            {
+                return File.ReadLines(LogFilePath).Reverse().Take(maxLines).Reverse().ToArray();
+            }
+            catch
+            {
+                return Array.Empty<string>();
+            }
+        }
+
+        public static void Clear()
+        {
+            lock (Sync)
+            {
+                _hasPending = false;
+                _pendingMessage = string.Empty;
+                _pendingKey = string.Empty;
+                _pendingTimestamp = string.Empty;
+                _pendingCount = 0;
+
+                try
+                {
+                    Directory.CreateDirectory(LogDirectory);
+                    File.WriteAllText(LogFilePath, string.Empty);
+                }
+                catch
+                {
+                }
+            }
         }
     }
 }

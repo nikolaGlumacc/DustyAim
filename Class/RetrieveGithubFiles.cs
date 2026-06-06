@@ -44,10 +44,19 @@ namespace Class
         }
     }
 
-    public sealed record DownloadItem(string Name, string Owner, string Repo, string Branch, string Path)
+    public sealed record DownloadItem(string Name, string Owner, string Repo, string Branch, string Path, string SourceName = "", string RepoUrl = "", string ModelType = "Unknown", int? DatasetImages = null)
     {
         public string DisplayTitle => string.IsNullOrWhiteSpace(Owner) ? Name : $"{Name} ({Owner}/{Repo})";
         public string SourceKey => $"{Owner}|{Repo}|{Branch}|{Path}|{Name}";
         public string RemotePath => Path;
+        public string MetadataLine
+        {
+            get
+            {
+                string source = !string.IsNullOrWhiteSpace(SourceName) ? SourceName : $"{Owner}/{Repo}";
+                string dataset = DatasetImages.HasValue ? $"{DatasetImages.Value:N0} images" : "Dataset size unknown";
+                return $"{ModelType} • {dataset} • {source}";
+            }
+        }
     }
 }
